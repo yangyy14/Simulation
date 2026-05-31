@@ -110,7 +110,7 @@ export default function ConfigPanel({ strategy, availableIndices, onChange, mobi
                   type="number"
                   min={0}
                   step={0.01}
-                  value={strategy.fees.purchaseFee * 100 || ''}
+                  value={strategy.fees.purchaseFee * 100}
                   onChange={(e) => setFee('purchaseFee', (Number(e.target.value) || 0) / 100)}
                   placeholder="0"
                   className="h-8 text-sm bg-root border-border font-mono"
@@ -122,7 +122,7 @@ export default function ConfigPanel({ strategy, availableIndices, onChange, mobi
                   type="number"
                   min={0}
                   step={0.01}
-                  value={strategy.fees.redemptionFee * 100 || ''}
+                  value={strategy.fees.redemptionFee * 100}
                   onChange={(e) => setFee('redemptionFee', (Number(e.target.value) || 0) / 100)}
                   placeholder="0"
                   className="h-8 text-sm bg-root border-border font-mono"
@@ -134,7 +134,7 @@ export default function ConfigPanel({ strategy, availableIndices, onChange, mobi
                   type="number"
                   min={0}
                   step={0.01}
-                  value={strategy.fees.managementFee * 100 || ''}
+                  value={strategy.fees.managementFee * 100}
                   onChange={(e) => setFee('managementFee', (Number(e.target.value) || 0) / 100)}
                   placeholder="0"
                   className="h-8 text-sm bg-root border-border font-mono"

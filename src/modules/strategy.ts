@@ -1,13 +1,17 @@
-import { type PriceSeries } from './data-loader'
+import { type IndexData } from './data-loader'
 import { xirr } from './xirr'
+import { computeMultiplier, type SmartConfig } from './valuator'
 
 export type Frequency = 'monthly' | 'weekly'
+export type AmountMode = 'fixed' | 'smart'
 
 export interface Segment {
   indexName: string
   frequency: Frequency
   day: number // 1-28 for monthly, 0-6 for weekly (0=Sun)
-  amount: number // gross investment per period (before fees)
+  amount: number // gross investment per period (before fees). fixed=actual, smart=base
+  amountMode?: AmountMode // default 'fixed'
+  smartConfig?: SmartConfig // only used when amountMode='smart'
   startDate: string
   endDate: string
 }
@@ -64,6 +68,17 @@ export function validateStrategy(
     if (s.frequency === 'weekly' && (s.day < 0 || s.day > 6)) {
       return `片段 #${i + 1}: 按周定投日必须在 0-6 之间（0=周日）`
     }
+    if (s.amountMode === 'smart') {
+      if (!s.smartConfig) {
+        return `片段 #${i + 1}: 智能定投模式必须配置估值参数`
+      }
+      if (s.smartConfig.lookbackYears < 1) {
+        return `片段 #${i + 1}: 回溯年数至少为 1`
+      }
+      if (s.smartConfig.cheapPercentile >= s.smartConfig.expensivePercentile) {
+        return `片段 #${i + 1}: 便宜阈值必须小于昂贵阈值`
+      }
+    }
   }
   return null
 }
@@ -103,7 +118,7 @@ export function generateInvestDates(segment: Segment): string[] {
 
 export function runSimulation(
   strategy: Strategy,
-  priceMap: Map<string, PriceSeries>,
+  priceMap: Map<string, IndexData>,
 ): PortfolioSummary {
   const transactions: Transaction[] = []
 
@@ -116,14 +131,21 @@ export function runSimulation(
       const price = series.getPrice(date)
       if (price === null) continue
 
-      const netAmount = segment.amount * (1 - strategy.fees.purchaseFee)
+      // Compute multiplier: smart mode uses Valuator, fixed mode is always 1x
+      let multiplier = 1.0
+      if (segment.amountMode === 'smart' && segment.smartConfig) {
+        multiplier = computeMultiplier(series, date, segment.smartConfig)
+      }
+      const grossAmount = segment.amount * multiplier
+
+      const netAmount = grossAmount * (1 - strategy.fees.purchaseFee)
       const shares = netAmount / price
       transactions.push({
         date,
         indexName: segment.indexName,
         price,
         shares,
-        grossAmount: segment.amount,
+        grossAmount,
       })
     }
   }

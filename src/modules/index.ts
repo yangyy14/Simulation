@@ -2,8 +2,8 @@ export { xirr } from './xirr'
 export {
   parseCSV,
   loadIndexData,
-  IndexPriceSeries,
-  type PriceSeries,
+  IndexDataImpl,
+  type IndexData,
 } from './data-loader'
 export {
   runSimulation,
@@ -15,3 +15,7 @@ export {
   type PortfolioSummary,
   type Frequency,
 } from './strategy'
+export {
+  computeMultiplier,
+  type SmartConfig,
+} from './valuator'

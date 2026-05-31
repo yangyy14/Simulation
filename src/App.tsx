@@ -6,8 +6,9 @@ import ConfigPanel from './components/ConfigPanel'
 import KpiCards from './components/KpiCards'
 import ValueChart from './components/ValueChart'
 import TransactionTable from './components/TransactionTable'
-import { loadIndexData, type PriceSeries } from './modules/data-loader'
-import { runSimulation, type Strategy, type PortfolioSummary } from './modules/strategy'
+import DataExplorer from './components/DataExplorer'
+import { loadIndexData, type IndexData } from './modules/data-loader'
+import { runSimulation, validateStrategy, type Strategy, type PortfolioSummary } from './modules/strategy'
 import { encodeStrategy, decodeStrategy, hasStrategyInURL } from './modules/url-serializer'
 import { useAutoSave, loadSavedStrategy } from './hooks/useAutoSave'
 
@@ -31,13 +32,16 @@ export default function App() {
     // Priority: URL > localStorage > default
     if (hasStrategyInURL()) {
       const fromURL = decodeStrategy()
-      if (fromURL) return fromURL
+      if (fromURL && !validateStrategy(fromURL, INDEX_NAMES)) return fromURL
     }
-    return loadSavedStrategy() ?? DEFAULT_STRATEGY
+    const saved = loadSavedStrategy()
+    if (saved && !validateStrategy(saved, INDEX_NAMES)) return saved
+    return DEFAULT_STRATEGY
   })
-  const [priceMap, setPriceMap] = useState<Map<string, PriceSeries>>(new Map())
+  const [priceMap, setPriceMap] = useState<Map<string, IndexData>>(new Map())
   const [loading, setLoading] = useState(true)
   const [loadErrors, setLoadErrors] = useState<string[]>([])
+  const [page, setPage] = useState<'sim' | 'data'>('sim')
   const [dragOver, setDragOver] = useState(false)
   const [mobileSidebar, setMobileSidebar] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -50,7 +54,7 @@ export default function App() {
     let cancelled = false
     async function load() {
       setLoading(true)
-      const map = new Map<string, PriceSeries>()
+      const map = new Map<string, IndexData>()
       const errors: string[] = []
       for (const name of INDEX_NAMES) {
         try {
@@ -97,10 +101,12 @@ export default function App() {
       if (!parsed.segments || !parsed.fees || !parsed.evalWindow) {
         throw new Error('Invalid format')
       }
+      const err = validateStrategy(parsed, INDEX_NAMES)
+      if (err) throw new Error(err)
       setStrategy(parsed)
       toast.success('策略已导入')
-    } catch {
-      toast.error('无效的策略文件')
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '无效的策略文件')
     }
   }, [])
 
@@ -173,22 +179,46 @@ export default function App() {
             D
           </div>
           <span className="font-semibold text-base tracking-tight">定投收益模拟</span>
+          <div className="flex items-center gap-1 ml-4">
+            <button
+              type="button"
+              onClick={() => setPage('sim')}
+              className={`px-3 py-1 text-xs rounded transition-colors ${page === 'sim' ? 'bg-blue text-white' : 'text-text-secondary hover:text-text-primary'}`}
+            >
+              策略模拟
+            </button>
+            <button
+              type="button"
+              onClick={() => setPage('data')}
+              className={`px-3 py-1 text-xs rounded transition-colors ${page === 'data' ? 'bg-blue text-white' : 'text-text-secondary hover:text-text-primary'}`}
+            >
+              数据审查
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-1.5">
-          <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={handleImport}>
-            <Upload size={13} /> 导入
-          </Button>
-          <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={handleExport}>
-            <Download size={13} /> 导出
-          </Button>
-          <Button variant="ghost" size="sm" className="h-8 text-xs gap-1.5" onClick={handleShare}>
-            <Share2 size={13} /> 分享
-          </Button>
-        </div>
+        {page === 'sim' && (
+          <div className="flex items-center gap-1.5">
+            <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={handleImport}>
+              <Upload size={13} /> 导入
+            </Button>
+            <Button variant="outline" size="sm" className="h-8 text-xs gap-1.5" onClick={handleExport}>
+              <Download size={13} /> 导出
+            </Button>
+            <Button variant="ghost" size="sm" className="h-8 text-xs gap-1.5" onClick={handleShare}>
+              <Share2 size={13} /> 分享
+            </Button>
+          </div>
+        )}
       </nav>
 
       {/* Main */}
-      <main className="flex h-[calc(100vh-3.5rem-2rem)]">
+      {page === 'data' ? (
+        <main className="h-[calc(100vh-3.5rem-2rem)] overflow-y-auto">
+          <DataExplorer />
+        </main>
+      ) : (
+        <>
+        <main className="flex h-[calc(100vh-3.5rem-2rem)]">
         <ConfigPanel
           strategy={strategy}
           availableIndices={Array.from(priceMap.keys())}
@@ -227,11 +257,12 @@ export default function App() {
                 transactionCount={summary.transactions.length}
                 evalEndDate={strategy.evalWindow.endDate}
               />
-              <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} />
+              <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} evalEndDate={strategy.evalWindow.endDate} />
               <TransactionTable
                 summary={summary}
                 transactions={summary.transactions}
                 evalEndDate={strategy.evalWindow.endDate}
+                priceMap={priceMap}
               />
             </>
           ) : (
@@ -242,22 +273,24 @@ export default function App() {
         </section>
       </main>
 
-      {/* Footer */}
-      {loadErrors.length > 0 && (
+        {/* Footer */}
+        {loadErrors.length > 0 && (
+          <footer className="h-8 flex items-center justify-between px-5 bg-surface border-t border-border text-xs text-text-muted">
+            <span>数据加载失败: {loadErrors.join(', ')}</span>
+          </footer>
+        )}
         <footer className="h-8 flex items-center justify-between px-5 bg-surface border-t border-border text-xs text-text-muted">
-          <span>数据加载失败: {loadErrors.join(', ')}</span>
+          <span>数据覆盖: 2004.01 — 2025.12</span>
+          <div className="flex gap-3">
+            {INDEX_NAMES.map((name) => (
+              <span key={name} className={priceMap.has(name) ? '' : 'text-red/60 line-through'}>
+                {name}
+              </span>
+            ))}
+          </div>
         </footer>
+        </>
       )}
-      <footer className="h-8 flex items-center justify-between px-5 bg-surface border-t border-border text-xs text-text-muted">
-        <span>数据覆盖: 2004.01 — 2025.12</span>
-        <div className="flex gap-3">
-          {INDEX_NAMES.map((name) => (
-            <span key={name} className={priceMap.has(name) ? '' : 'text-red/60 line-through'}>
-              {name}
-            </span>
-          ))}
-        </div>
-      </footer>
     </div>
   )
 }

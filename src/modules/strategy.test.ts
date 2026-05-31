@@ -6,23 +6,25 @@ import {
   type Strategy,
   type Segment,
 } from './strategy'
-import { IndexPriceSeries, type PriceSeries } from './data-loader'
+import { IndexDataImpl, type IndexData } from './data-loader'
+import type { SmartConfig } from './valuator'
 
-function makeDateSeries(name: string, startDate: string, count: number, basePrice = 1000, step = 2): PriceSeries {
+function makeDateSeries(name: string, startDate: string, count: number, basePrice = 1000, step = 2): IndexData {
+  const pad = (n: number) => String(n).padStart(2, '0')
   const rows: { date: string; price: number }[] = []
   const start = new Date(startDate)
   for (let i = 0; i < count; i++) {
     const d = new Date(start)
     d.setDate(d.getDate() + i)
-    const ds = d.toISOString().split('T')[0]
+    const ds = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
     rows.push({ date: ds, price: basePrice + i * step })
   }
-  return new IndexPriceSeries(name, rows)
+  return new IndexDataImpl(name, rows)
 }
 
 // 6 months of daily data: Jan-Jun 2020
 const series = makeDateSeries('沪深300全收益', '2020-01-01', 182, 1000, 1)
-const priceMap = new Map<string, PriceSeries>()
+const priceMap = new Map<string, IndexData>()
 priceMap.set('沪深300全收益', series)
 
 describe('generateInvestDates', () => {
@@ -150,5 +152,88 @@ describe('runSimulation', () => {
   it('computes cumulativeReturn correctly', () => {
     const { totalCost, marketValue, cumulativeReturn } = runSimulation(baseStrategy, priceMap)
     expect(cumulativeReturn).toBeCloseTo((marketValue - totalCost) / totalCost, 10)
+  })
+})
+
+describe('runSimulation smart mode', () => {
+  function pad(n: number) { return String(n).padStart(2, '0') }
+  // Create mock with varying PE using local dates (no timezone shift)
+  function makeDataWithPE(name: string, startYear: number, count: number, basePrice = 1000): IndexData {
+    const rows: { date: string; price: number; metric?: number }[] = []
+    for (let i = 0; i < count; i++) {
+      const d = new Date(startYear, 0, 1)
+      d.setDate(d.getDate() + i)
+      const ds = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      const pe = 8 + (i / count) * 14  // 8 → 22 across the range
+      rows.push({ date: ds, price: basePrice + i, metric: pe })
+    }
+    return new IndexDataImpl(name, rows)
+  }
+
+  const seriesWithPE = makeDataWithPE('沪深300全收益', 2020, 366, 1000)
+  const mapWithPE = new Map<string, IndexData>()
+  mapWithPE.set('沪深300全收益', seriesWithPE)
+
+  it('applies smart multiplier > 1.0 for cheap PE, < 1.0 for expensive PE', () => {
+    // Build data: 300 days of PE=10, then 30 days of PE=20, then 35 days of PE=30
+    const rowsPe: { date: string; price: number; metric?: number }[] = []
+    for (let i = 0; i < 365; i++) {
+      const d = new Date(2020, 0, 1)
+      d.setDate(d.getDate() + i)
+      const pad = (n: number) => String(n).padStart(2, '0')
+      const ds = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      const pe = i < 300 ? 10 : i < 330 ? 20 : 30
+      rowsPe.push({ date: ds, price: 1000 + i, metric: pe })
+    }
+    const peData = new IndexDataImpl('沪深300全收益', rowsPe)
+    const peMap = new Map<string, IndexData>()
+    peMap.set('沪深300全收益', peData)
+
+    const smartCfg: SmartConfig = {
+      lookbackYears: 10,
+      cheapPercentile: 33, cheapMultiplier: 1.5,
+      expensivePercentile: 66, expensiveMultiplier: 0.5,
+    }
+
+    // Test cheap: Jan 2020, PE=10, only 1 data point → 0% ≤ 33% → 1.5x
+    const stratCheap: Strategy = {
+      segments: [{
+        indexName: '沪深300全收益', frequency: 'monthly', day: 1, amount: 1000,
+        amountMode: 'smart', smartConfig: smartCfg,
+        startDate: '2020-01-01', endDate: '2020-01-01',
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-12-31' },
+    }
+    const { transactions: cheapTx } = runSimulation(stratCheap, peMap)
+    expect(cheapTx[0].grossAmount).toBe(1500)
+
+    // Test expensive: Dec 2020, PE=30 (>66th percentile → 0.5x)
+    const stratExp: Strategy = {
+      segments: [{
+        indexName: '沪深300全收益', frequency: 'monthly', day: 1, amount: 1000,
+        amountMode: 'smart', smartConfig: smartCfg,
+        startDate: '2020-12-01', endDate: '2020-12-01',
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-12-01', endDate: '2020-12-31' },
+    }
+    const { transactions: expTx } = runSimulation(stratExp, peMap)
+    expect(expTx[0].grossAmount).toBe(500)
+  })
+
+  it('fixed mode unaffected by smart changes', () => {
+    const strategy: Strategy = {
+      segments: [{
+        indexName: '沪深300全收益', frequency: 'monthly', day: 1, amount: 500,
+        amountMode: 'fixed',
+        startDate: '2020-01-01', endDate: '2020-03-01',
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-12-31' },
+    }
+    const { transactions, totalCost } = runSimulation(strategy, mapWithPE)
+    expect(transactions.length).toBe(3)
+    expect(totalCost).toBe(1500) // 3 × 500
   })
 })

@@ -1,29 +1,32 @@
 import { useMemo, useState } from 'react'
 import type { Transaction, PortfolioSummary } from '@/modules/strategy'
+import type { IndexData } from '@/modules/data-loader'
 
 interface Props {
   summary: PortfolioSummary
   transactions: Transaction[]
   evalEndDate: string
+  priceMap: Map<string, IndexData>
 }
 
 type SortField = 'date' | 'indexName' | 'price' | 'shares' | 'grossAmount' | 'currentValue' | 'pnl'
 
-export default function TransactionTable({ summary, transactions, evalEndDate }: Props) {
+export default function TransactionTable({ transactions, evalEndDate, priceMap }: Props) {
   const [sortField, setSortField] = useState<SortField>('date')
   const [sortAsc, setSortAsc] = useState(false)
 
-  // Estimate current value and P&L for each transaction
+  // Compute actual current value per transaction: shares × index price at evalEndDate
   const enriched = useMemo(() => {
-    if (transactions.length === 0) return []
-    const totalShares = transactions.reduce((sum, tx) => sum + tx.shares, 0)
-    const avgValue = summary.marketValue / totalShares
     return transactions.map((tx) => {
-      const currentValue = tx.shares * avgValue // approximate
-      const pnl = (currentValue - tx.grossAmount) / tx.grossAmount
+      const series = priceMap.get(tx.indexName)
+      const currentPrice = series?.getPrice(evalEndDate)
+      const currentValue = currentPrice !== null && currentPrice !== undefined
+        ? tx.shares * currentPrice
+        : 0
+      const pnl = tx.grossAmount > 0 ? (currentValue - tx.grossAmount) / tx.grossAmount : 0
       return { ...tx, currentValue, pnl }
     })
-  }, [transactions, summary])
+  }, [transactions, evalEndDate, priceMap])
 
   const sorted = useMemo(() => {
     const arr = [...enriched]

@@ -72,6 +72,32 @@ export default function SegmentEditor({ segment, index: i, availableIndices, onC
           </div>
         </div>
 
+        <div className="space-y-1">
+          <Label className="text-xs text-text-secondary">定投模式</Label>
+          <div className="flex gap-1">
+            <button
+              type="button"
+              onClick={() => set({ amountMode: 'fixed' })}
+              className={cn(
+                'flex-1 text-center py-1.5 text-xs rounded cursor-pointer transition-colors',
+                segment.amountMode !== 'smart' ? 'bg-blue text-white' : 'bg-root text-text-muted hover:text-text-secondary',
+              )}
+            >
+              固定金额
+            </button>
+            <button
+              type="button"
+              onClick={() => set({ amountMode: 'smart', smartConfig: segment.smartConfig || { lookbackYears: 10, cheapPercentile: 30, cheapMultiplier: 1.5, expensivePercentile: 70, expensiveMultiplier: 0.5 }})}
+              className={cn(
+                'flex-1 text-center py-1.5 text-xs rounded cursor-pointer transition-colors',
+                segment.amountMode === 'smart' ? 'bg-blue text-white' : 'bg-root text-text-muted hover:text-text-secondary',
+              )}
+            >
+              智能定投
+            </button>
+          </div>
+        </div>
+
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
             <Label className="text-xs text-text-secondary">
@@ -100,7 +126,9 @@ export default function SegmentEditor({ segment, index: i, availableIndices, onC
             )}
           </div>
           <div className="space-y-1">
-            <Label className="text-xs text-text-secondary">金额 ¥</Label>
+            <Label className="text-xs text-text-secondary">
+              {segment.amountMode === 'smart' ? '基准金额 ¥' : '金额 ¥'}
+            </Label>
             <Input
               type="number"
               min={0}
@@ -111,6 +139,57 @@ export default function SegmentEditor({ segment, index: i, availableIndices, onC
             />
           </div>
         </div>
+
+        {segment.amountMode === 'smart' && segment.smartConfig && (
+          <div className="space-y-2 bg-surface rounded p-2.5 border border-border">
+            <div className="flex items-center gap-2">
+              <Label className="text-xs text-text-secondary whitespace-nowrap">回溯年数</Label>
+              <Input
+                type="number"
+                min={1}
+                max={20}
+                value={segment.smartConfig.lookbackYears}
+                onChange={(e) => set({ smartConfig: { ...segment.smartConfig!, lookbackYears: Number(e.target.value) || 10 } })}
+                className="h-7 w-16 text-xs bg-root border-border font-mono"
+              />
+            </div>
+            <Label className="text-xs text-text-secondary">估值规则</Label>
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="text-text-muted w-10 shrink-0">PE ≤</span>
+              <Input
+                type="number" min={0} max={100}
+                value={segment.smartConfig.cheapPercentile}
+                onChange={(e) => set({ smartConfig: { ...segment.smartConfig!, cheapPercentile: Number(e.target.value) || 0 } })}
+                className="h-7 w-14 text-xs bg-root border-border font-mono"
+              />
+              <span className="text-text-muted">% →</span>
+              <Input
+                type="number" min={0.1} max={5} step={0.1}
+                value={segment.smartConfig.cheapMultiplier}
+                onChange={(e) => set({ smartConfig: { ...segment.smartConfig!, cheapMultiplier: Number(e.target.value) || 1.5 } })}
+                className="h-7 w-16 text-xs bg-root border-border font-mono"
+              />
+              <span className="text-text-muted">倍（便宜多买）</span>
+            </div>
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="text-text-muted w-10 shrink-0">PE ≥</span>
+              <Input
+                type="number" min={0} max={100}
+                value={segment.smartConfig.expensivePercentile}
+                onChange={(e) => set({ smartConfig: { ...segment.smartConfig!, expensivePercentile: Number(e.target.value) || 70 } })}
+                className="h-7 w-14 text-xs bg-root border-border font-mono"
+              />
+              <span className="text-text-muted">% →</span>
+              <Input
+                type="number" min={0.1} max={5} step={0.1}
+                value={segment.smartConfig.expensiveMultiplier}
+                onChange={(e) => set({ smartConfig: { ...segment.smartConfig!, expensiveMultiplier: Number(e.target.value) || 0.5 } })}
+                className="h-7 w-16 text-xs bg-root border-border font-mono"
+              />
+              <span className="text-text-muted">倍（贵时少买）</span>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">

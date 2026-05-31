@@ -1,30 +1,37 @@
-export interface PriceSeries {
+export interface IndexData {
   name: string
   getPrice(date: string): number | null
+  getMetric(date: string): number | null
+  getMetricsInRange(startDate: string, endDate: string): number[]
 }
 
-export class IndexPriceSeries implements PriceSeries {
+export class IndexDataImpl implements IndexData {
   name: string
+  private usePriceAsMetric: boolean
   private prices: Map<string, number>
+  private metrics: Map<string, number>
   private sortedDates: string[]
 
-  constructor(name: string, rows: { date: string; price: number }[]) {
+  constructor(name: string, rows: { date: string; price: number; metric?: number }[], usePriceAsMetric = false) {
     this.name = name
+    this.usePriceAsMetric = usePriceAsMetric
     this.prices = new Map()
+    this.metrics = new Map()
     this.sortedDates = []
     for (const row of rows) {
       this.prices.set(row.date, row.price)
+      if (row.metric !== undefined) {
+        this.metrics.set(row.date, row.metric)
+      }
       this.sortedDates.push(row.date)
     }
     this.sortedDates.sort()
   }
 
   getPrice(targetDate: string): number | null {
-    // Direct hit
     if (this.prices.has(targetDate)) {
       return this.prices.get(targetDate)!
     }
-    // Roll forward: find first date >= target
     for (const d of this.sortedDates) {
       if (d >= targetDate) {
         return this.prices.get(d)!
@@ -32,24 +39,62 @@ export class IndexPriceSeries implements PriceSeries {
     }
     return null
   }
+
+  getMetricsInRange(startDate: string, endDate: string): number[] {
+    const metricSource = this.usePriceAsMetric ? this.prices : this.metrics
+    const values: number[] = []
+    const seen = new Set<number>()
+    for (const d of this.sortedDates) {
+      if (d < startDate) continue
+      if (d > endDate) break
+      const v = metricSource.get(d)
+      if (v !== undefined && !seen.has(v)) {
+        seen.add(v)
+        values.push(v)
+      }
+    }
+    return values
+  }
+
+  getMetric(targetDate: string): number | null {
+    // Gold: no PE data, use price as metric for percentile calc
+    if (this.usePriceAsMetric) {
+      return this.getPrice(targetDate)
+    }
+    if (this.metrics.has(targetDate)) {
+      return this.metrics.get(targetDate)!
+    }
+    for (const d of this.sortedDates) {
+      if (d >= targetDate) {
+        const v = this.metrics.get(d)
+        if (v !== undefined) return v
+      }
+    }
+    return null
+  }
 }
 
-export function parseCSV(csvText: string, name: string): IndexPriceSeries {
+export function parseCSV(csvText: string, name: string): IndexDataImpl {
   const lines = csvText.trim().split(/\r?\n/)
-  const rows: { date: string; price: number }[] = []
+  const rows: { date: string; price: number; metric?: number }[] = []
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i].trim()
     if (!line) continue
-    const [date, priceStr] = line.split(',')
-    const price = parseFloat(priceStr)
-    if (date && !isNaN(price)) {
-      rows.push({ date: date.trim(), price })
+    const cols = line.split(',')
+    const date = cols[0]?.trim()
+    const price = parseFloat(cols[1])
+    if (!date || isNaN(price)) continue
+    const row: { date: string; price: number; metric?: number } = { date, price }
+    if (cols.length >= 3) {
+      const metric = parseFloat(cols[2])
+      if (!isNaN(metric)) row.metric = metric
     }
+    rows.push(row)
   }
-  return new IndexPriceSeries(name, rows)
+  return new IndexDataImpl(name, rows, name === 'AU9999')
 }
 
-export async function loadIndexData(indexName: string): Promise<IndexPriceSeries> {
+export async function loadIndexData(indexName: string): Promise<IndexDataImpl> {
   const resp = await fetch(`/data/${indexName}.csv`)
   if (!resp.ok) {
     throw new Error(`Failed to load data for ${indexName}: ${resp.status}`)
