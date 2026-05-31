@@ -4,5 +4,5 @@ dist
 
 .claude/
 .scratch/
-.agent/
+.agents/
 .obsidian/
