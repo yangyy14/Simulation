@@ -88,7 +88,7 @@ export default function TransactionTable({ transactions, evalEndDate, priceMap }
                 <td className="px-3 py-2 font-mono tabular-nums">{tx.shares.toFixed(2)}</td>
                 <td className="px-3 py-2 font-mono tabular-nums">¥ {tx.grossAmount.toLocaleString()}</td>
                 <td className="px-3 py-2 font-mono tabular-nums">¥ {tx.currentValue.toLocaleString()}</td>
-                <td className={`px-3 py-2 font-mono tabular-nums ${tx.pnl >= 0 ? 'text-green' : 'text-red'}`}>
+                <td className={`px-3 py-2 font-mono tabular-nums ${tx.pnl >= 0 ? 'text-red' : 'text-green'}`}>
                   {tx.pnl >= 0 ? '+' : ''}{(tx.pnl * 100).toFixed(2)}%
                 </td>
               </tr>

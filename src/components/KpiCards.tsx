@@ -23,7 +23,7 @@ export default function KpiCards({ summary, transactionCount, evalEndDate }: Pro
 
       <div className="bg-card border border-border rounded-lg p-4">
         <div className="text-xs text-text-secondary mb-1">期末总市值</div>
-        <div className="font-mono text-2xl font-semibold tabular-nums text-green">
+        <div className="font-mono text-2xl font-semibold tabular-nums text-red">
           ¥ {summary.marketValue.toLocaleString()}
         </div>
         <div className="text-xs text-text-muted mt-1">{evalEndDate} 估值</div>
@@ -31,7 +31,7 @@ export default function KpiCards({ summary, transactionCount, evalEndDate }: Pro
 
       <div className="bg-card border border-border rounded-lg p-4">
         <div className="text-xs text-text-secondary mb-1">累计收益率</div>
-        <div className={`font-mono text-2xl font-semibold tabular-nums flex items-center gap-1 ${returnPositive ? 'text-green' : 'text-red'}`}>
+        <div className={`font-mono text-2xl font-semibold tabular-nums flex items-center gap-1 ${returnPositive ? 'text-red' : 'text-green'}`}>
           {returnPositive ? '+' : ''}{(summary.cumulativeReturn * 100).toFixed(2)}%
           {returnPositive ? <TrendingUp size={20} /> : <TrendingDown size={20} />}
         </div>
@@ -42,7 +42,7 @@ export default function KpiCards({ summary, transactionCount, evalEndDate }: Pro
 
       <div className="bg-card border border-border rounded-lg p-4">
         <div className="text-xs text-text-secondary mb-1">XIRR 年化收益率</div>
-        <div className={`font-mono text-2xl font-semibold tabular-nums ${xirrPositive ? 'text-green' : 'text-red'}`}>
+        <div className={`font-mono text-2xl font-semibold tabular-nums ${xirrPositive ? 'text-red' : 'text-green'}`}>
           {summary.xirr !== null ? `${(summary.xirr * 100).toFixed(2)}%` : '—'}
         </div>
         <div className="text-xs text-text-muted mt-1">内部回报率</div>
