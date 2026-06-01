@@ -329,23 +329,21 @@ function computeRiskMetrics(
     if (dd > maxDD) maxDD = dd
   }
 
-  // Annualized volatility from underlying index price, not portfolio MV.
-  // Portfolio MV includes contributions which would inflate volatility.
-  const primarySeries = priceMap.values().next().value
+  // Annualized volatility from portfolio MV, stripping out new contributions.
   let annualVol: number | null = null
-  if (primarySeries && mvSeries.length >= 2) {
-    const priceReturns: number[] = []
+  if (mvSeries.length >= 2) {
+    const returns: number[] = []
     for (let i = 1; i < mvSeries.length; i++) {
-      const p0 = primarySeries.getPrice(mvSeries[i - 1].date)
-      const p1 = primarySeries.getPrice(mvSeries[i].date)
-      if (p0 && p1 && p0 > 0) {
-        priceReturns.push(p1 / p0 - 1)
+      const contribution = mvSeries[i].cost - mvSeries[i - 1].cost
+      const prevMV = mvSeries[i - 1].mv
+      // Organic return: MV growth excluding newly invested money
+      if (prevMV > 0) {
+        returns.push((mvSeries[i].mv - contribution) / prevMV - 1)
       }
     }
-    if (priceReturns.length > 0) {
-      const mean = priceReturns.reduce((s, r) => s + r, 0) / priceReturns.length
-      const variance = priceReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / priceReturns.length
-      // Data points are ~monthly apart, annualize accordingly
+    if (returns.length > 0) {
+      const mean = returns.reduce((s, r) => s + r, 0) / returns.length
+      const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length
       const avgDays = (new Date(mvSeries[mvSeries.length - 1].date).getTime() -
                        new Date(mvSeries[0].date).getTime()) / (24 * 60 * 60 * 1000) / (mvSeries.length - 1)
       const periodsPerYear = 365.25 / Math.max(avgDays, 1)
