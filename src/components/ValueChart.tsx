@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
 import type { Transaction, PortfolioSummary } from '@/modules/strategy'
 import type { IndexData } from '@/modules/data-loader'
+import { getAssetCategory } from '@/App'
 
 interface Props {
   summary: PortfolioSummary
@@ -16,7 +17,12 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
 
     const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date))
 
-    const points: { date: string; cost: number; value: number }[] = []
+    interface Point {
+      date: string; cost: number; value: number
+      breakdown?: { stock: number; bond: number; gold: number; sub: { aStock: number; usStock: number } }
+    }
+
+    const points: Point[] = []
     let runningCost = 0
     const shareAcc: Record<string, number> = {}
 
@@ -24,16 +30,42 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
       runningCost += tx.grossAmount
       shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) + tx.shares
       let mv = 0
+      const breakdown = { stock: 0, bond: 0, gold: 0, sub: { aStock: 0, usStock: 0 } }
       for (const [idxName, shares] of Object.entries(shareAcc)) {
         const series = priceMap.get(idxName)
         if (!series) continue
         const price = series.getPrice(tx.date)
-        if (price !== null) mv += shares * price
+        if (price !== null) {
+          const val = shares * price
+          mv += val
+          const cat = getAssetCategory(idxName)
+          if (cat.category === 'stock') {
+            breakdown.stock += val
+            if (cat.subCategory === 'us-stock') breakdown.sub.usStock += val
+            else breakdown.sub.aStock += val
+          } else if (cat.category === 'bond') {
+            breakdown.bond += val
+          } else if (cat.category === 'gold') {
+            breakdown.gold += val
+          }
+        }
       }
-      points.push({ date: tx.date, cost: runningCost, value: mv })
+      points.push({ date: tx.date, cost: runningCost, value: mv, breakdown })
     }
 
-    if (points.length > 0) {
+    // Deduplicate by date — keep last point per date (portfolio mode creates
+    // multiple transactions on the same date, one per allocation)
+    const uniquePoints: Point[] = []
+    for (const pt of points) {
+      const last = uniquePoints[uniquePoints.length - 1]
+      if (last && last.date === pt.date) {
+        uniquePoints[uniquePoints.length - 1] = pt
+      } else {
+        uniquePoints.push(pt)
+      }
+    }
+
+    if (uniquePoints.length > 0) {
       let terminalMV = 0
       for (const [idxName, shares] of Object.entries(shareAcc)) {
         const series = priceMap.get(idxName)
@@ -41,19 +73,18 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
         const price = series.getPrice(evalEndDate)
         if (price !== null) terminalMV += shares * price
       }
-      points.push({
+      uniquePoints.push({
         date: evalEndDate,
         cost: runningCost,
-        value: terminalMV > 0 ? terminalMV : points[points.length - 1].value,
+        value: terminalMV > 0 ? terminalMV : uniquePoints[uniquePoints.length - 1].value,
       })
     }
 
-    const dates = points.map((p) => p.date)
-    const costData = points.map((p) => p.cost)
-    const valueData = points.map((p) => p.value)
+    const costData = uniquePoints.map((p) => [p.date, p.cost] as [string, number])
+    const valueData = uniquePoints.map((p) => [p.date, p.value] as [string, number])
 
     let crossoverIdx = -1
-    for (let i = 0; i < points.length; i++) {
+    for (let i = 0; i < uniquePoints.length; i++) {
       if (valueData[i] >= costData[i]) {
         crossoverIdx = i
         break
@@ -75,6 +106,49 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
             if (p.value == null) continue
             html += `<div><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px;"></span>${p.seriesName}: <span style="font-family:Fira Code;font-weight:600;">¥ ${p.value.toLocaleString()}</span></div>`
           }
+          // Show cumulative return at this point
+          const idx = arr[0]?.dataIndex
+          if (idx !== undefined && idx < uniquePoints.length) {
+            const pt = uniquePoints[idx]
+            if (pt.cost > 0) {
+              const ret = (pt.value - pt.cost) / pt.cost
+              const sign = ret >= 0 ? '+' : ''
+              html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;">累计收益率</span> <span style="font-family:Fira Code;font-weight:600;color:${ret >= 0 ? '#EF4444' : '#22C55E'};">${sign}${(ret * 100).toFixed(2)}%</span></div>`
+            }
+
+            // Show asset allocation when multiple categories present
+            if (pt.breakdown && pt.value > 0) {
+              const bd = pt.breakdown
+              const categories: { label: string; pct: number }[] = []
+              if (bd.stock > 0) {
+                const aPct = (bd.sub.aStock / pt.value * 100)
+                const uPct = (bd.sub.usStock / pt.value * 100)
+                let label = `股票 ${(bd.stock / pt.value * 100).toFixed(0)}%`
+                if (bd.sub.aStock > 0 && bd.sub.usStock > 0) {
+                  label += `  (A股 ${aPct.toFixed(0)}%  美股 ${uPct.toFixed(0)}%)`
+                } else if (bd.sub.aStock > 0 && bd.sub.usStock === 0) {
+                  label += `  (A股)`
+                } else if (bd.sub.usStock > 0 && bd.sub.aStock === 0) {
+                  label += `  (美股)`
+                }
+                categories.push({ label, pct: bd.stock / pt.value * 100 })
+              }
+              if (bd.bond > 0) {
+                categories.push({ label: `债券 ${(bd.bond / pt.value * 100).toFixed(0)}%`, pct: bd.bond / pt.value * 100 })
+              }
+              if (bd.gold > 0) {
+                categories.push({ label: `黄金 ${(bd.gold / pt.value * 100).toFixed(0)}%`, pct: bd.gold / pt.value * 100 })
+              }
+
+              if (categories.length >= 2) {
+                html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;font-size:11px;">资产配置</span>`
+                for (const cat of categories) {
+                  html += `<div style="font-size:11px;color:#94A3B8;">  ${cat.label}</div>`
+                }
+                html += `</div>`
+              }
+            }
+          }
           return html
         },
       },
@@ -85,11 +159,12 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
       },
       grid: { left: 60, right: 20, top: 40, bottom: 60 },
       xAxis: {
-        type: 'category',
-        data: dates,
+        type: 'time',
         axisLine: { lineStyle: { color: '#334155' } },
         axisTick: { show: false },
         axisLabel: { color: '#64748B', fontSize: 10 },
+        min: uniquePoints[0]?.date,
+        max: uniquePoints[uniquePoints.length - 1]?.date,
       },
       yAxis: {
         type: 'value',
@@ -126,7 +201,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
         ...(crossoverIdx >= 0 ? [{
           name: '回本节点',
           type: 'scatter',
-          data: [[dates[crossoverIdx], valueData[crossoverIdx]]],
+          data: [[uniquePoints[crossoverIdx].date, uniquePoints[crossoverIdx].value]],
           symbolSize: 10,
           itemStyle: { color: '#F59E0B' },
           symbol: 'pin',

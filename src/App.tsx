@@ -5,21 +5,77 @@ import { Toaster, toast } from 'sonner'
 import ConfigPanel from './components/ConfigPanel'
 import KpiCards from './components/KpiCards'
 import ValueChart from './components/ValueChart'
-import TransactionTable from './components/TransactionTable'
+import ResultTabs from './components/ResultTabs'
 import DataExplorer from './components/DataExplorer'
 import { loadIndexData, type IndexData } from './modules/data-loader'
 import { runSimulation, validateStrategy, type Strategy, type PortfolioSummary } from './modules/strategy'
 import { encodeStrategy, decodeStrategy, hasStrategyInURL } from './modules/url-serializer'
 import { useAutoSave, loadSavedStrategy } from './hooks/useAutoSave'
 
-const INDEX_NAMES = [
-  '上证50全收益',
-  '沪深300全收益',
-  '中证500全收益',
-  '中证1000全收益',
-  '中证红利全收益',
-  'AU9999',
+export interface AssetCategory {
+  category: 'stock' | 'bond' | 'gold'
+  subCategory: 'a-stock' | 'us-stock' | null
+}
+
+export interface AssetGroup {
+  label: string
+  indices: string[]
+}
+
+const INDEX_META: Record<string, AssetCategory> = {
+  '上证50全收益':   { category: 'stock', subCategory: 'a-stock' },
+  '沪深300全收益':  { category: 'stock', subCategory: 'a-stock' },
+  '中证500全收益':  { category: 'stock', subCategory: 'a-stock' },
+  '中证1000全收益': { category: 'stock', subCategory: 'a-stock' },
+  '中证红利全收益': { category: 'stock', subCategory: 'a-stock' },
+  '标普500':       { category: 'stock', subCategory: 'us-stock' },
+  '纳斯达克100':    { category: 'stock', subCategory: 'us-stock' },
+  '国债1-3年':      { category: 'bond', subCategory: null },
+  '国债3-5年':      { category: 'bond', subCategory: null },
+  '国债5-7年':      { category: 'bond', subCategory: null },
+  'AU9999':        { category: 'gold', subCategory: null },
+}
+
+export function getAssetCategory(indexName: string): AssetCategory {
+  return INDEX_META[indexName] ?? { category: 'stock', subCategory: 'a-stock' }
+}
+
+export function hasPE(indexName: string): boolean {
+  const meta = INDEX_META[indexName]
+  if (!meta) return false
+  return meta.category === 'stock' && meta.subCategory === 'a-stock'
+}
+
+export function canSmartDCA(indexName: string): boolean {
+  const meta = INDEX_META[indexName]
+  if (!meta) return false
+  return meta.category === 'stock' && meta.subCategory === 'a-stock'
+}
+
+const GROUP_ORDER: { label: string; filter: (meta: AssetCategory) => boolean }[] = [
+  { label: 'A股', filter: (m) => m.category === 'stock' && m.subCategory === 'a-stock' },
+  { label: '债券', filter: (m) => m.category === 'bond' },
+  { label: '美股', filter: (m) => m.category === 'stock' && m.subCategory === 'us-stock' },
+  { label: '黄金', filter: (m) => m.category === 'gold' },
 ]
+
+export function getAssetGroups(): AssetGroup[] {
+  const remaining = new Set(Object.keys(INDEX_META))
+  const groups: AssetGroup[] = []
+  for (const g of GROUP_ORDER) {
+    const indices: string[] = []
+    for (const name of remaining) {
+      if (g.filter(INDEX_META[name])) {
+        indices.push(name)
+      }
+    }
+    for (const n of indices) remaining.delete(n)
+    if (indices.length > 0) groups.push({ label: g.label, indices })
+  }
+  return groups
+}
+
+const INDEX_NAMES = Object.keys(INDEX_META)
 
 const DEFAULT_STRATEGY: Strategy = {
   segments: [],
@@ -73,6 +129,38 @@ export default function App() {
     load()
     return () => { cancelled = true }
   }, [])
+
+  // Find latest data date across all loaded indices
+  const maxDataDate = useMemo(() => {
+    let latest = ''
+    for (const series of priceMap.values()) {
+      const d = series.getLatestDate()
+      if (d && d > latest) latest = d
+    }
+    return latest || '2025-12-31'
+  }, [priceMap])
+
+  // Clamp strategy dates to data range
+  useEffect(() => {
+    if (!maxDataDate || loading) return
+    let needsUpdate = false
+    const clamped = { ...strategy }
+    if (strategy.evalWindow.endDate > maxDataDate) {
+      clamped.evalWindow = { ...strategy.evalWindow, endDate: maxDataDate }
+      needsUpdate = true
+    }
+    const segs = strategy.segments.map((s) => {
+      if (s.endDate > maxDataDate) {
+        needsUpdate = true
+        return { ...s, endDate: maxDataDate }
+      }
+      return s
+    })
+    if (needsUpdate) {
+      setStrategy({ ...strategy, evalWindow: clamped.evalWindow, segments: segs })
+      toast('日期已自动调整为数据最新日期')
+    }
+  }, [maxDataDate, loading])
 
   // Run simulation
   const summary: PortfolioSummary | null = useMemo(() => {
@@ -225,6 +313,7 @@ export default function App() {
           onChange={setStrategy}
           mobileOpen={mobileSidebar}
           onMobileToggle={() => setMobileSidebar(false)}
+          maxDate={maxDataDate}
         />
 
         <section className="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
@@ -258,7 +347,7 @@ export default function App() {
                 evalEndDate={strategy.evalWindow.endDate}
               />
               <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} evalEndDate={strategy.evalWindow.endDate} />
-              <TransactionTable
+              <ResultTabs
                 summary={summary}
                 transactions={summary.transactions}
                 evalEndDate={strategy.evalWindow.endDate}

@@ -5,6 +5,13 @@ import { computeMultiplier, type SmartConfig } from './valuator'
 export type Frequency = 'monthly' | 'weekly'
 export type AmountMode = 'fixed' | 'smart'
 
+export interface Allocation {
+  indexName: string
+  weight: number          // 0-1, all weights should sum to ~1
+  amountMode?: AmountMode // default 'fixed'
+  smartConfig?: SmartConfig
+}
+
 export interface Segment {
   indexName: string
   frequency: Frequency
@@ -12,6 +19,7 @@ export interface Segment {
   amount: number // gross investment per period (before fees). fixed=actual, smart=base
   amountMode?: AmountMode // default 'fixed'
   smartConfig?: SmartConfig // only used when amountMode='smart'
+  allocations?: Allocation[] // non-empty = portfolio mode
   startDate: string
   endDate: string
 }
@@ -43,6 +51,10 @@ export interface PortfolioSummary {
   cumulativeReturn: number
   xirr: number | null
   transactions: Transaction[]
+  maxDrawdown: number | null       // 最大回撤 (0-1)
+  annualVolatility: number | null  // 年化波动率 (0-1)
+  calmarRatio: number | null       // 收益/回撤比
+  longestDrawdownDays: number      // 最长回撤天数
 }
 
 export function validateStrategy(
@@ -53,9 +65,59 @@ export function validateStrategy(
 
   for (let i = 0; i < strategy.segments.length; i++) {
     const s = strategy.segments[i]
-    if (!availableIndices.includes(s.indexName)) {
-      return `片段 #${i + 1}: 指数 "${s.indexName}" 不可用`
+    const isPortfolio = s.allocations && s.allocations.length > 0
+
+    if (isPortfolio) {
+      // Portfolio mode validations
+      if (s.allocations!.length < 2) {
+        return `片段 #${i + 1}: 组合模式至少需要 2 个指数`
+      }
+      if (s.allocations!.length > 10) {
+        return `片段 #${i + 1}: 组合模式最多支持 10 个指数`
+      }
+      const sum = s.allocations!.reduce((acc, a) => acc + a.weight, 0)
+      if (sum < 0.98 || sum > 1.02) {
+        return `片段 #${i + 1}: 权重之和必须接近 100%（当前 ${(sum * 100).toFixed(1)}%）`
+      }
+      for (let j = 0; j < s.allocations!.length; j++) {
+        const a = s.allocations![j]
+        if (!availableIndices.includes(a.indexName)) {
+          return `片段 #${i + 1}: 指数 "${a.indexName}" 不可用`
+        }
+        if (a.weight <= 0 || a.weight > 1) {
+          return `片段 #${i + 1}: 权重必须在 0-1 之间`
+        }
+        if (a.amountMode === 'smart') {
+          if (!a.smartConfig) {
+            return `片段 #${i + 1}: 指数 "${a.indexName}" 智能定投模式必须配置估值参数`
+          }
+          if (a.smartConfig.lookbackYears < 1) {
+            return `片段 #${i + 1}: 指数 "${a.indexName}" 回溯年数至少为 1`
+          }
+          if (a.smartConfig.cheapPercentile >= a.smartConfig.expensivePercentile) {
+            return `片段 #${i + 1}: 指数 "${a.indexName}" 便宜阈值必须小于昂贵阈值`
+          }
+        }
+      }
+    } else {
+      // Single index mode validations (existing)
+      if (!availableIndices.includes(s.indexName)) {
+        return `片段 #${i + 1}: 指数 "${s.indexName}" 不可用`
+      }
+      if (s.amountMode === 'smart') {
+        if (!s.smartConfig) {
+          return `片段 #${i + 1}: 智能定投模式必须配置估值参数`
+        }
+        if (s.smartConfig.lookbackYears < 1) {
+          return `片段 #${i + 1}: 回溯年数至少为 1`
+        }
+        if (s.smartConfig.cheapPercentile >= s.smartConfig.expensivePercentile) {
+          return `片段 #${i + 1}: 便宜阈值必须小于昂贵阈值`
+        }
+      }
     }
+
+    // Shared validations
     if (s.amount <= 0) {
       return `片段 #${i + 1}: 定投金额必须大于 0`
     }
@@ -67,17 +129,6 @@ export function validateStrategy(
     }
     if (s.frequency === 'weekly' && (s.day < 0 || s.day > 6)) {
       return `片段 #${i + 1}: 按周定投日必须在 0-6 之间（0=周日）`
-    }
-    if (s.amountMode === 'smart') {
-      if (!s.smartConfig) {
-        return `片段 #${i + 1}: 智能定投模式必须配置估值参数`
-      }
-      if (s.smartConfig.lookbackYears < 1) {
-        return `片段 #${i + 1}: 回溯年数至少为 1`
-      }
-      if (s.smartConfig.cheapPercentile >= s.smartConfig.expensivePercentile) {
-        return `片段 #${i + 1}: 便宜阈值必须小于昂贵阈值`
-      }
     }
   }
   return null
@@ -123,30 +174,56 @@ export function runSimulation(
   const transactions: Transaction[] = []
 
   for (const segment of strategy.segments) {
-    const series = priceMap.get(segment.indexName)
-    if (!series) continue
-
     const dates = generateInvestDates(segment)
-    for (const date of dates) {
-      const price = series.getPrice(date)
-      if (price === null) continue
+    const isPortfolio = segment.allocations && segment.allocations.length > 0
 
-      // Compute multiplier: smart mode uses Valuator, fixed mode is always 1x
-      let multiplier = 1.0
-      if (segment.amountMode === 'smart' && segment.smartConfig) {
-        multiplier = computeMultiplier(series, date, segment.smartConfig)
+    if (isPortfolio) {
+      for (const date of dates) {
+        for (const alloc of segment.allocations!) {
+          const series = priceMap.get(alloc.indexName)
+          if (!series) continue
+          const price = series.getPrice(date)
+          if (price === null) continue
+
+          let multiplier = 1.0
+          if (alloc.amountMode === 'smart' && alloc.smartConfig) {
+            multiplier = computeMultiplier(series, date, alloc.smartConfig)
+          }
+          const grossAmount = segment.amount * alloc.weight * multiplier
+          const netAmount = grossAmount * (1 - strategy.fees.purchaseFee)
+          const shares = netAmount / price
+          transactions.push({
+            date,
+            indexName: alloc.indexName,
+            price,
+            shares,
+            grossAmount,
+          })
+        }
       }
-      const grossAmount = segment.amount * multiplier
+    } else {
+      const series = priceMap.get(segment.indexName)
+      if (!series) continue
 
-      const netAmount = grossAmount * (1 - strategy.fees.purchaseFee)
-      const shares = netAmount / price
-      transactions.push({
-        date,
-        indexName: segment.indexName,
-        price,
-        shares,
-        grossAmount,
-      })
+      for (const date of dates) {
+        const price = series.getPrice(date)
+        if (price === null) continue
+
+        let multiplier = 1.0
+        if (segment.amountMode === 'smart' && segment.smartConfig) {
+          multiplier = computeMultiplier(series, date, segment.smartConfig)
+        }
+        const grossAmount = segment.amount * multiplier
+        const netAmount = grossAmount * (1 - strategy.fees.purchaseFee)
+        const shares = netAmount / price
+        transactions.push({
+          date,
+          indexName: segment.indexName,
+          price,
+          shares,
+          grossAmount,
+        })
+      }
     }
   }
 
@@ -187,17 +264,117 @@ export function runSimulation(
     }
   }
 
+  const risk = computeRiskMetrics(transactions, priceMap, evalEnd)
+
   return {
     totalCost,
     marketValue,
     cumulativeReturn,
     xirr: xirrResult,
     transactions,
+    ...risk,
   }
 }
 
-function yearsBetween(startDate: string, endDate: string): number {
+function daysBetween(startDate: string, endDate: string): number {
   const start = new Date(startDate + 'T00:00:00').getTime()
   const end = new Date(endDate + 'T00:00:00').getTime()
-  return (end - start) / (365.25 * 24 * 60 * 60 * 1000)
+  return (end - start) / (24 * 60 * 60 * 1000)
+}
+
+function yearsBetween(startDate: string, endDate: string): number {
+  return daysBetween(startDate, endDate) / 365.25
+}
+
+function computeRiskMetrics(
+  transactions: Transaction[],
+  priceMap: Map<string, IndexData>,
+  evalEnd: string,
+): Pick<PortfolioSummary, 'maxDrawdown' | 'annualVolatility' | 'calmarRatio' | 'longestDrawdownDays'> {
+  if (transactions.length === 0) {
+    return { maxDrawdown: null, annualVolatility: null, calmarRatio: null, longestDrawdownDays: 0 }
+  }
+
+  // Build daily MV sequence at each transaction date
+  const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date))
+  const shareAcc: Record<string, number> = {}
+  const mvSeries: { date: string; mv: number; cost: number }[] = []
+  let runningCost = 0
+
+  for (const tx of sorted) {
+    runningCost += tx.grossAmount
+    shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) + tx.shares
+    let mv = 0
+    for (const [idxName, shares] of Object.entries(shareAcc)) {
+      const series = priceMap.get(idxName)
+      if (!series) continue
+      const price = series.getPrice(tx.date)
+      if (price !== null) mv += shares * price
+    }
+    if (mv > 0) {
+      mvSeries.push({ date: tx.date, mv, cost: runningCost })
+    }
+  }
+
+  if (mvSeries.length < 2) {
+    return { maxDrawdown: null, annualVolatility: null, calmarRatio: null, longestDrawdownDays: 0 }
+  }
+
+  // Max drawdown
+  let peak = mvSeries[0].mv
+  let maxDD = 0
+  for (const pt of mvSeries) {
+    if (pt.mv > peak) peak = pt.mv
+    const dd = (peak - pt.mv) / peak
+    if (dd > maxDD) maxDD = dd
+  }
+
+  // Annualized volatility from underlying index price, not portfolio MV.
+  // Portfolio MV includes contributions which would inflate volatility.
+  const primarySeries = priceMap.values().next().value
+  let annualVol: number | null = null
+  if (primarySeries && mvSeries.length >= 2) {
+    const priceReturns: number[] = []
+    for (let i = 1; i < mvSeries.length; i++) {
+      const p0 = primarySeries.getPrice(mvSeries[i - 1].date)
+      const p1 = primarySeries.getPrice(mvSeries[i].date)
+      if (p0 && p1 && p0 > 0) {
+        priceReturns.push(p1 / p0 - 1)
+      }
+    }
+    if (priceReturns.length > 0) {
+      const mean = priceReturns.reduce((s, r) => s + r, 0) / priceReturns.length
+      const variance = priceReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / priceReturns.length
+      // Data points are ~monthly apart, annualize accordingly
+      const avgDays = (new Date(mvSeries[mvSeries.length - 1].date).getTime() -
+                       new Date(mvSeries[0].date).getTime()) / (24 * 60 * 60 * 1000) / (mvSeries.length - 1)
+      const periodsPerYear = 365.25 / Math.max(avgDays, 1)
+      annualVol = Math.sqrt(variance) * Math.sqrt(periodsPerYear)
+    }
+  }
+
+  // Calmar ratio = cumulativeReturn / maxDrawdown (total return, not annualized)
+  const lastMV = mvSeries[mvSeries.length - 1].mv
+  const lastCost = mvSeries[mvSeries.length - 1].cost
+  const totalRet = lastCost > 0 ? (lastMV - lastCost) / lastCost : 0
+  const calmar = maxDD > 0 ? totalRet / maxDD : null
+
+  // Longest drawdown days (market value < cost)
+  let longest = 0
+  let current = 0
+  for (const pt of mvSeries) {
+    if (pt.mv < pt.cost) {
+      current++
+      if (current > longest) longest = current
+    } else {
+      current = 0
+    }
+  }
+
+  return {
+    maxDrawdown: maxDD > 0 ? maxDD : null,
+    annualVolatility: annualVol,
+    calmarRatio: calmar,
+    longestDrawdownDays: longest,
+  }
 }

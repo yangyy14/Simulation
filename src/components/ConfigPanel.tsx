@@ -14,6 +14,7 @@ interface Props {
   onChange: (s: Strategy) => void
   mobileOpen?: boolean
   onMobileToggle?: () => void
+  maxDate?: string
 }
 
 const DEFAULT_SEGMENT: Segment = {
@@ -25,7 +26,7 @@ const DEFAULT_SEGMENT: Segment = {
   endDate: '2025-12-31',
 }
 
-export default function ConfigPanel({ strategy, availableIndices, onChange, mobileOpen, onMobileToggle }: Props) {
+export default function ConfigPanel({ strategy, availableIndices, onChange, mobileOpen, onMobileToggle, maxDate }: Props) {
   const [feeOpen, setFeeOpen] = useState(false)
 
   const addSegment = () => {
@@ -75,6 +76,7 @@ export default function ConfigPanel({ strategy, availableIndices, onChange, mobi
                 type="date"
                 value={strategy.evalWindow.startDate}
                 onChange={(e) => setEval('startDate', e.target.value)}
+                max={maxDate}
                 className="h-8 text-sm bg-root border-border"
               />
             </div>
@@ -84,6 +86,7 @@ export default function ConfigPanel({ strategy, availableIndices, onChange, mobi
                 type="date"
                 value={strategy.evalWindow.endDate}
                 onChange={(e) => setEval('endDate', e.target.value)}
+                max={maxDate}
                 className="h-8 text-sm bg-root border-border"
               />
             </div>
@@ -162,6 +165,7 @@ export default function ConfigPanel({ strategy, availableIndices, onChange, mobi
             availableIndices={availableIndices}
             onChange={(s) => updateSegment(idx, s)}
             onRemove={() => removeSegment(idx)}
+            maxDate={maxDate}
           />
         ))}
 

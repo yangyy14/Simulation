@@ -3,6 +3,7 @@ export interface IndexData {
   getPrice(date: string): number | null
   getMetric(date: string): number | null
   getMetricsInRange(startDate: string, endDate: string): number[]
+  getLatestDate(): string | null
 }
 
 export class IndexDataImpl implements IndexData {
@@ -38,6 +39,10 @@ export class IndexDataImpl implements IndexData {
       }
     }
     return null
+  }
+
+  getLatestDate(): string | null {
+    return this.sortedDates.length > 0 ? this.sortedDates[this.sortedDates.length - 1] : null
   }
 
   getMetricsInRange(startDate: string, endDate: string): number[] {

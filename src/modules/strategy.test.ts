@@ -5,6 +5,7 @@ import {
   runSimulation,
   type Strategy,
   type Segment,
+  type Allocation,
 } from './strategy'
 import { IndexDataImpl, type IndexData } from './data-loader'
 import type { SmartConfig } from './valuator'
@@ -235,5 +236,207 @@ describe('runSimulation smart mode', () => {
     const { transactions, totalCost } = runSimulation(strategy, mapWithPE)
     expect(transactions.length).toBe(3)
     expect(totalCost).toBe(1500) // 3 × 500
+  })
+})
+
+describe('runSimulation portfolio mode', () => {
+  function pad(n: number) { return String(n).padStart(2, '0') }
+
+  // Data covering Jan–Mar 2020 (62 trading days: Jan has 22, Feb has 20, Mar has 22)
+  function makeSeries(name: string, startYear: number, count: number): IndexData {
+    const rows: { date: string; price: number }[] = []
+    for (let i = 0; i < count; i++) {
+      const d = new Date(startYear, 0, 1)
+      d.setDate(d.getDate() + i)
+      const ds = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      rows.push({ date: ds, price: 100 + i * 0.1 })
+    }
+    return new IndexDataImpl(name, rows)
+  }
+
+  // Series with PE data for smart mode tests
+  function makeSeriesWithPE(name: string, startYear: number, count: number): IndexData {
+    const rows: { date: string; price: number; metric?: number }[] = []
+    for (let i = 0; i < count; i++) {
+      const d = new Date(startYear, 0, 1)
+      d.setDate(d.getDate() + i)
+      const ds = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      rows.push({ date: ds, price: 100 + i * 0.1, metric: 10 + (i / count) * 20 })
+    }
+    return new IndexDataImpl(name, rows)
+  }
+
+  const hs300 = makeSeries('沪深300全收益', 2020, 90)
+  const bond = makeSeries('国债1-3年', 2020, 90)
+  const pm = new Map<string, IndexData>()
+  pm.set('沪深300全收益', hs300)
+  pm.set('国债1-3年', bond)
+
+  const hs300pe = makeSeriesWithPE('沪深300全收益', 2020, 90)
+  const pmPE = new Map<string, IndexData>()
+  pmPE.set('沪深300全收益', hs300pe)
+  pmPE.set('国债1-3年', bond)
+
+  const portfolioSegment: Segment = {
+    indexName: '',
+    frequency: 'monthly',
+    day: 1,
+    amount: 2000,
+    startDate: '2020-01-01',
+    endDate: '2020-03-01',
+    allocations: [
+      { indexName: '沪深300全收益', weight: 0.6 },
+      { indexName: '国债1-3年', weight: 0.4 },
+    ],
+  }
+
+  it('generates N transactions per period (one per allocation)', () => {
+    const strat: Strategy = {
+      segments: [portfolioSegment],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-03-31' },
+    }
+    const { transactions } = runSimulation(strat, pm)
+    // 3 months × 2 allocations = 6 transactions
+    expect(transactions.length).toBe(6)
+    // All transactions on Jan 1, Feb 1, Mar 1
+    const dates = [...new Set(transactions.map((t) => t.date))].sort()
+    expect(dates).toEqual(['2020-01-01', '2020-02-01', '2020-03-01'])
+  })
+
+  it('splits amount by weight correctly', () => {
+    const strat: Strategy = {
+      segments: [portfolioSegment],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-03-31' },
+    }
+    const { transactions } = runSimulation(strat, pm)
+    const hs300Tx = transactions.filter((t) => t.indexName === '沪深300全收益')
+    const bondTx = transactions.filter((t) => t.indexName === '国债1-3年')
+    // 2000 × 0.6 = 1200 per period
+    hs300Tx.forEach((t) => expect(t.grossAmount).toBeCloseTo(1200, 0))
+    // 2000 × 0.4 = 800 per period
+    bondTx.forEach((t) => expect(t.grossAmount).toBeCloseTo(800, 0))
+  })
+
+  it('applies L1 multiplier only to allocations with smart mode', () => {
+    const seg: Segment = {
+      ...portfolioSegment,
+      allocations: [
+        {
+          indexName: '沪深300全收益', weight: 0.5,
+          amountMode: 'smart',
+          smartConfig: { lookbackYears: 10, cheapPercentile: 99, cheapMultiplier: 2, expensivePercentile: 100, expensiveMultiplier: 1 },
+        },
+        { indexName: '国债1-3年', weight: 0.5 },
+      ],
+    }
+    const strat: Strategy = {
+      segments: [seg],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-03-31' },
+    }
+    const { transactions } = runSimulation(strat, pmPE)
+    const smartTx = transactions.find((t) => t.indexName === '沪深300全收益')!
+    const bondTx = transactions.find((t) => t.indexName === '国债1-3年')!
+    // Smart: PE very low → cheapPercentile=99, so almost always cheap → 2×
+    expect(smartTx.grossAmount).toBeCloseTo(2000, 0)  // 1000 × 2
+    // Bond: no smart → 1×
+    expect(bondTx.grossAmount).toBeCloseTo(1000, 0)   // 1000 × 1
+  })
+
+  it('totalCost aggregates across all allocations', () => {
+    const strat: Strategy = {
+      segments: [portfolioSegment],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-03-31' },
+    }
+    const { totalCost } = runSimulation(strat, pm)
+    expect(totalCost).toBeCloseTo(6000, 0)  // 3 × 2000
+  })
+
+  it('mixes single-index and portfolio segments', () => {
+    const singleSegment: Segment = {
+      indexName: '沪深300全收益', frequency: 'monthly', day: 1, amount: 500,
+      startDate: '2020-01-01', endDate: '2020-01-01',
+    }
+    const strat: Strategy = {
+      segments: [singleSegment, portfolioSegment],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-03-31' },
+    }
+    const { transactions, totalCost } = runSimulation(strat, pm)
+    // Single segment: 1 tx. Portfolio: 3 months × 2 = 6 txs. Total = 7.
+    expect(transactions.length).toBe(7)
+    // 500 + 3*2000 = 6500
+    expect(totalCost).toBeCloseTo(6500, 0)
+  })
+})
+
+describe('validateStrategy portfolio mode', () => {
+  const available = ['沪深300全收益', '国债1-3年']
+
+  it('returns null for valid portfolio segment', () => {
+    const strat: Strategy = {
+      segments: [{
+        indexName: '', frequency: 'monthly', day: 1, amount: 2000,
+        startDate: '2020-01-01', endDate: '2020-03-01',
+        allocations: [
+          { indexName: '沪深300全收益', weight: 0.6 },
+          { indexName: '国债1-3年', weight: 0.4 },
+        ],
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-12-31' },
+    }
+    expect(validateStrategy(strat, available)).toBeNull()
+  })
+
+  it('rejects weight sum too low', () => {
+    const strat: Strategy = {
+      segments: [{
+        indexName: '', frequency: 'monthly', day: 1, amount: 2000,
+        startDate: '2020-01-01', endDate: '2020-03-01',
+        allocations: [
+          { indexName: '沪深300全收益', weight: 0.5 },
+          { indexName: '国债1-3年', weight: 0.3 },
+        ],
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-12-31' },
+    }
+    expect(validateStrategy(strat, available)).toContain('权重')
+  })
+
+  it('rejects unknown index in allocation', () => {
+    const strat: Strategy = {
+      segments: [{
+        indexName: '', frequency: 'monthly', day: 1, amount: 2000,
+        startDate: '2020-01-01', endDate: '2020-03-01',
+        allocations: [
+          { indexName: 'Unknown', weight: 0.5 },
+          { indexName: '沪深300全收益', weight: 0.5 },
+        ],
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-12-31' },
+    }
+    expect(validateStrategy(strat, available)).toContain('不可用')
+  })
+
+  it('rejects smart mode with missing smartConfig in allocation', () => {
+    const strat: Strategy = {
+      segments: [{
+        indexName: '', frequency: 'monthly', day: 1, amount: 2000,
+        startDate: '2020-01-01', endDate: '2020-03-01',
+        allocations: [
+          { indexName: '沪深300全收益', weight: 0.6, amountMode: 'smart' },
+          { indexName: '国债1-3年', weight: 0.4 },
+        ],
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-12-31' },
+    }
+    expect(validateStrategy(strat, available)).toContain('估值参数')
   })
 })
