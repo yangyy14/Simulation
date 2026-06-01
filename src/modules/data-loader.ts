@@ -95,7 +95,8 @@ export function parseCSV(csvText: string, name: string): IndexDataImpl {
 }
 
 export async function loadIndexData(indexName: string): Promise<IndexDataImpl> {
-  const resp = await fetch(`/data/${indexName}.csv`)
+  const baseUrl = import.meta.env.BASE_URL || '/'
+  const resp = await fetch(`${baseUrl}data/${indexName}.csv`)
   if (!resp.ok) {
     throw new Error(`Failed to load data for ${indexName}: ${resp.status}`)
   }
