@@ -75,11 +75,11 @@ describe('computeMultiplier', () => {
     const prices = [1000, 1010, 1020]
     const pes = [10, 12, 20]
     const data = makeData('test', dates, prices, pes)
-    // Current PE = 20, history = [10, 12, 20], below = 2, total = 3 → 66.7%
-    // 66.7% ≤ 70% → middle tier → 1.0x
-    expect(computeMultiplier(data, '2020-03-01', defaultConfig)).toBe(1.0)
-    // Current PE = 10, below = 0, total = 3 → 0% → first tier → 1.5x
-    expect(computeMultiplier(data, '2020-01-01', defaultConfig)).toBe(1.5)
+    // Current PE = 20, history = [10, 12, 20], below=2, equal=1 → (2+0.5)/3 = 83.3%
+    // 83.3% ≥ 70% → expensive tier → 0.5x
+    expect(computeMultiplier(data, '2020-03-01', defaultConfig)).toBe(0.5)
+    // Current PE = 10, only 1 data point in range (itself) → (0+0.5)/1 = 50% → middle → 1.0x
+    expect(computeMultiplier(data, '2020-01-01', defaultConfig)).toBe(1.0)
   })
 
   it('clamps multiplier to 0.1-5.0 range', () => {

@@ -41,7 +41,7 @@ export function computeMultiplier(
   for (const v of history) {
     if (v === currentMetric) countEqual++
   }
-  const percentile = (countBelow / history.length) * 100
+  const percentile = ((countBelow + countEqual / 2) / history.length) * 100
 
   // Match: cheap → expensive → middle=1.0
   if (percentile <= config.cheapPercentile) {

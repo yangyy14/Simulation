@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Button } from '@/components/ui/button'
-import { Download, Upload, Share2 } from 'lucide-react'
+import { Download, Upload, Share2, Play } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
 import ConfigPanel from './components/ConfigPanel'
 import KpiCards from './components/KpiCards'
@@ -94,6 +94,11 @@ export default function App() {
     if (saved && !validateStrategy(saved, INDEX_NAMES)) return saved
     return DEFAULT_STRATEGY
   })
+  // Committed strategy = what was last computed. Only updates on explicit "计算".
+  const [committedStrategy, setCommittedStrategy] = useState(strategy)
+  const hasPendingChanges = useMemo(() => {
+    return JSON.stringify(strategy) !== JSON.stringify(committedStrategy)
+  }, [strategy, committedStrategy])
   const [priceMap, setPriceMap] = useState<Map<string, IndexData>>(new Map())
   const [loading, setLoading] = useState(true)
   const [loadErrors, setLoadErrors] = useState<string[]>([])
@@ -157,16 +162,18 @@ export default function App() {
       return s
     })
     if (needsUpdate) {
-      setStrategy({ ...strategy, evalWindow: clamped.evalWindow, segments: segs })
+      const updated = { ...strategy, evalWindow: clamped.evalWindow, segments: segs }
+      setStrategy(updated)
+      setCommittedStrategy(updated)
       toast('日期已自动调整为数据最新日期')
     }
   }, [maxDataDate, loading])
 
-  // Run simulation
+  // Run simulation on committed strategy only
   const summary: PortfolioSummary | null = useMemo(() => {
-    if (priceMap.size === 0 || strategy.segments.length === 0) return null
-    return runSimulation(strategy, priceMap)
-  }, [strategy, priceMap])
+    if (priceMap.size === 0 || committedStrategy.segments.length === 0) return null
+    return runSimulation(committedStrategy, priceMap)
+  }, [committedStrategy, priceMap])
 
   // Export
   const handleExport = useCallback(() => {
@@ -192,6 +199,7 @@ export default function App() {
       const err = validateStrategy(parsed, INDEX_NAMES)
       if (err) throw new Error(err)
       setStrategy(parsed)
+      setCommittedStrategy(parsed) // auto-commit on import
       toast.success('策略已导入')
     } catch (e) {
       toast.error(e instanceof Error ? e.message : '无效的策略文件')
@@ -231,7 +239,17 @@ export default function App() {
     reader.readAsText(file)
   }, [importJSON])
 
-  // Share
+  // Compute
+  const handleCompute = useCallback(() => {
+    const err = validateStrategy(strategy, INDEX_NAMES)
+    if (err) {
+      toast.error(err)
+      return
+    }
+    setCommittedStrategy(strategy)
+  }, [strategy])
+
+  // Share (use committed strategy — what's actually computed)
   const handleShare = useCallback(() => {
     const url = encodeStrategy(strategy)
     navigator.clipboard.writeText(url).then(
@@ -335,28 +353,39 @@ export default function App() {
               <div className="bg-card border border-border rounded-lg p-5 h-80" />
               <div className="bg-card border border-border rounded-lg p-5 h-64" />
             </div>
-          ) : strategy.segments.length === 0 ? (
+          ) : committedStrategy.segments.length === 0 && strategy.segments.length === 0 ? (
             <div className="flex-1 flex items-center justify-center">
               <p className="text-text-muted text-sm">添加一个定投片段开始模拟</p>
             </div>
           ) : summary ? (
             <>
+              {/* Pending changes banner */}
+              {hasPendingChanges && (
+                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 flex items-center justify-between">
+                  <span className="text-amber-400 text-xs">配置已修改，结果未更新</span>
+                  <Button size="sm" className="h-7 text-xs gap-1.5" onClick={handleCompute}>
+                    <Play size={12} /> 重新计算
+                  </Button>
+                </div>
+              )}
               <KpiCards
                 summary={summary}
                 transactionCount={summary.transactions.length}
-                evalEndDate={strategy.evalWindow.endDate}
+                evalEndDate={committedStrategy.evalWindow.endDate}
               />
-              <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} evalEndDate={strategy.evalWindow.endDate} />
+              <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} evalEndDate={committedStrategy.evalWindow.endDate} />
               <ResultTabs
                 summary={summary}
                 transactions={summary.transactions}
-                evalEndDate={strategy.evalWindow.endDate}
+                evalEndDate={committedStrategy.evalWindow.endDate}
                 priceMap={priceMap}
               />
             </>
           ) : (
             <div className="flex-1 flex items-center justify-center">
-              <p className="text-text-muted text-sm">选择定投参数后将自动计算结果</p>
+              <Button onClick={handleCompute} size="sm" className="h-9 text-sm gap-2">
+                <Play size={14} /> 开始计算
+              </Button>
             </div>
           )}
         </section>

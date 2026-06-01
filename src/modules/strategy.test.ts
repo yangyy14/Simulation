@@ -196,7 +196,7 @@ describe('runSimulation smart mode', () => {
       expensivePercentile: 66, expensiveMultiplier: 0.5,
     }
 
-    // Test cheap: Jan 2020, PE=10, only 1 data point → 0% ≤ 33% → 1.5x
+    // Test cheap: Jan 2020, PE=10, only 1 data point → 50% → middle → 1.0x
     const stratCheap: Strategy = {
       segments: [{
         indexName: '沪深300全收益', frequency: 'monthly', day: 1, amount: 1000,
@@ -207,7 +207,7 @@ describe('runSimulation smart mode', () => {
       evalWindow: { startDate: '2020-01-01', endDate: '2020-12-31' },
     }
     const { transactions: cheapTx } = runSimulation(stratCheap, peMap)
-    expect(cheapTx[0].grossAmount).toBe(1500)
+    expect(cheapTx[0].grossAmount).toBe(1000)
 
     // Test expensive: Dec 2020, PE=30 (>66th percentile → 0.5x)
     const stratExp: Strategy = {
