@@ -241,7 +241,7 @@ export default function ConfigPanel({ strategy, availableIndices, onChange, mobi
               />
             </div>
             <p className="text-[11px] text-text-muted italic">
-              仅在有 A 股和债券的组合中生效，通过股债收益差自动偏移股债权重
+              通过股债收益差自动偏移 A 股和债券的权重。需要债券 YTM 数据（运行 fetch_data.py --full 下载）
             </p>
           </CardContent>
         )}

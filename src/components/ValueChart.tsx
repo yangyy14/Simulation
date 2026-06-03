@@ -13,7 +13,7 @@ interface Props {
   l2Config?: Strategy['l2Config']
 }
 
-export default function ValueChart({ summary, transactions, priceMap, evalEndDate }: Props) {
+export default function ValueChart({ summary, transactions, priceMap, evalEndDate, l2Config }: Props) {
   const option = useMemo(() => {
     if (transactions.length === 0) return {}
 
@@ -25,10 +25,21 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
       staticStockWeight: number
     }
 
+    interface TxInfo { indexName: string; grossAmount: number }
+
     interface Point {
       date: string; cost: number; value: number
       breakdown?: { stock: number; bond: number; gold: number; sub: { aStock: number; usStock: number } }
       l2Info?: L2Info
+      buyTx?: TxInfo[]
+    }
+
+    // Pre-group transactions by date for buy breakdown display
+    const txByDate = new Map<string, TxInfo[]>()
+    for (const tx of sorted) {
+      const list = txByDate.get(tx.date) || []
+      list.push({ indexName: tx.indexName, grossAmount: tx.grossAmount })
+      txByDate.set(tx.date, list)
     }
 
     const points: Point[] = []
@@ -72,13 +83,16 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
           const stockData = priceMap.get(stockIdx!)
           const bondData = priceMap.get(bondIdx!)
           if (stockData && bondData) {
-            const sw = aStockNames.reduce((s, n) => s + (shareAcc[n] || 0) * (stockData.getPrice(tx.date) || 0), 0) / (mv || 1)
-            const result = computeStockWeight(stockData, bondData, tx.date, sw, l2Config)
-            if (result && result.stockWeight !== sw) {
-              const pe = stockData.getMetric(tx.date)
-              const ytm = bondData.getMetric(tx.date)
-              if (pe && ytm) {
-                l2Info = { spread: (1 / pe - ytm / 100) * 100, adjStockWeight: result.stockWeight, staticStockWeight: sw }
+            const pe = stockData.getMetric(tx.date)
+            const ytm = bondData.getMetric(tx.date)
+            if (pe && ytm && mv > 0) {
+              const stockMV = aStockNames.reduce((s, n) => s + (shareAcc[n] || 0) * (stockData.getPrice(tx.date) || 0), 0)
+              const sw = stockMV / mv
+              const result = computeStockWeight(stockData, bondData, tx.date, sw, l2Config)
+              l2Info = {
+                spread: (1 / pe - ytm / 100) * 100,
+                adjStockWeight: result ? result.stockWeight : sw,
+                staticStockWeight: sw,
               }
             }
           }
@@ -98,6 +112,10 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
       } else {
         uniquePoints.push(pt)
       }
+    }
+    // Attach per-date buy transactions to deduplicated points
+    for (const pt of uniquePoints) {
+      pt.buyTx = txByDate.get(pt.date)
     }
 
     if (uniquePoints.length > 0) {
@@ -184,6 +202,17 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
               }
             }
 
+            // Show buy breakdown at this date
+            if (pt.buyTx && pt.buyTx.length > 0) {
+              const totalBuy = pt.buyTx.reduce((s, t) => s + t.grossAmount, 0)
+              html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;font-size:11px;">本次买入</span>`
+              for (const t of pt.buyTx) {
+                const pct = totalBuy > 0 ? (t.grossAmount / totalBuy * 100).toFixed(0) : '0'
+                html += `<div style="font-size:11px;color:#94A3B8;">  ${t.indexName}: ¥ ${t.grossAmount.toLocaleString()} (${pct}%)</div>`
+              }
+              html += `</div>`
+            }
+
             // Show L2 info when active
             if (pt.l2Info) {
               const li = pt.l2Info
@@ -253,7 +282,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
         }] : []),
       ] as object[],
     }
-  }, [summary, transactions, priceMap, evalEndDate])
+  }, [summary, transactions, priceMap, evalEndDate, l2Config])
 
   return (
     <div className="bg-card border border-border rounded-lg p-5">

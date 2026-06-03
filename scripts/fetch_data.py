@@ -65,6 +65,22 @@ def write_csv(path, rows, has_pe=False):
                 f.write(f'{d},{seen[d][1]}\n')
     return len(sorted_dates)
 
+def write_csv_ytm(path, rows):
+    """Write 3-column bond CSV with YTM. rows = [(date, price, ytm), ...]."""
+    seen = {}
+    for row in rows:
+        d = row[0]
+        if d not in seen:
+            seen[d] = row
+    sorted_dates = sorted(seen.keys())
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write('日期,收盘价,到期收益率\n')
+        for d in sorted_dates:
+            ytm = seen[d][2]
+            ytm_str = f'{ytm}' if ytm != '' else ''
+            f.write(f'{d},{seen[d][1]},{ytm_str}\n')
+    return len(sorted_dates)
+
 def read_csv(path):
     """Read existing CSV, return list of (date_str, value)."""
     if not os.path.exists(path):
@@ -185,26 +201,42 @@ def fetch_gold_full():
     return False, 0
 
 def fetch_bond_cbond(name, index_category, period):
-    """Download one ChinaBond treasury wealth index by duration."""
+    """Download one ChinaBond treasury wealth index by duration + YTM."""
     log(f'  {name} ({index_category} / {period})', end=' ')
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            df = ak.bond_index_general_cbond(
+            df_price = ak.bond_index_general_cbond(
                 index_category=index_category,
                 indicator='财富',
                 period=period,
             )
-            if not df.empty:
-                rows = []
-                for _, r in df.iterrows():
+            df_ytm = ak.bond_index_general_cbond(
+                index_category=index_category,
+                indicator='平均市值法到期收益率',
+                period=period,
+            )
+            if not df_price.empty:
+                # Build YTM lookup by date
+                ytm_map = {}
+                for _, r in df_ytm.iterrows():
                     d = r['date']
                     if hasattr(d, 'strftime'):
                         d = d.strftime('%Y-%m-%d')
                     else:
                         d = str(d)[:10]
-                    rows.append((d, r['value']))
+                    ytm_map[d] = r['value']
+                # Merge price + YTM
+                rows = []
+                for _, r in df_price.iterrows():
+                    d = r['date']
+                    if hasattr(d, 'strftime'):
+                        d = d.strftime('%Y-%m-%d')
+                    else:
+                        d = str(d)[:10]
+                    ytm = ytm_map.get(d)
+                    rows.append((d, r['value'], ytm if ytm is not None else ''))
                 path = os.path.join(OUTPUT_DIR, f'{name}.csv')
-                n = write_csv(path, rows)
+                n = write_csv_ytm(path, rows)
                 log(f'→ {n} rows')
                 return True, n
         except Exception as e:
