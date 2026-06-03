@@ -373,7 +373,7 @@ export default function App() {
                 transactionCount={summary.transactions.length}
                 evalEndDate={committedStrategy.evalWindow.endDate}
               />
-              <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} evalEndDate={committedStrategy.evalWindow.endDate} />
+              <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} evalEndDate={committedStrategy.evalWindow.endDate} l2Config={committedStrategy.l2Config} />
               <ResultTabs
                 summary={summary}
                 transactions={summary.transactions}

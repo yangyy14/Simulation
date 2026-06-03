@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
-import type { Transaction, PortfolioSummary } from '@/modules/strategy'
+import type { Transaction, PortfolioSummary, Strategy } from '@/modules/strategy'
 import type { IndexData } from '@/modules/data-loader'
+import { computeStockWeight } from '@/modules/l2-allocator'
 import { getAssetCategory } from '@/App'
 
 interface Props {
@@ -9,6 +10,7 @@ interface Props {
   transactions: Transaction[]
   priceMap: Map<string, IndexData>
   evalEndDate: string
+  l2Config?: Strategy['l2Config']
 }
 
 export default function ValueChart({ summary, transactions, priceMap, evalEndDate }: Props) {
@@ -17,9 +19,16 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
 
     const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date))
 
+    interface L2Info {
+      spread: number
+      adjStockWeight: number
+      staticStockWeight: number
+    }
+
     interface Point {
       date: string; cost: number; value: number
       breakdown?: { stock: number; bond: number; gold: number; sub: { aStock: number; usStock: number } }
+      l2Info?: L2Info
     }
 
     const points: Point[] = []
@@ -50,7 +59,33 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
           }
         }
       }
-      points.push({ date: tx.date, cost: runningCost, value: mv, breakdown })
+      // L2 info at this point
+      let l2Info: L2Info | undefined
+      if (l2Config) {
+        const aStockNames = Object.keys(shareAcc).filter((n) => {
+          const c = getAssetCategory(n); return c.category === 'stock' && c.subCategory === 'a-stock'
+        })
+        const bondNames = Object.keys(shareAcc).filter((n) => getAssetCategory(n).category === 'bond')
+        if (aStockNames.length > 0 && bondNames.length > 0) {
+          const stockIdx = aStockNames[0]
+          const bondIdx = bondNames.find((n) => n.includes('3-5')) || bondNames[0]
+          const stockData = priceMap.get(stockIdx!)
+          const bondData = priceMap.get(bondIdx!)
+          if (stockData && bondData) {
+            const sw = aStockNames.reduce((s, n) => s + (shareAcc[n] || 0) * (stockData.getPrice(tx.date) || 0), 0) / (mv || 1)
+            const result = computeStockWeight(stockData, bondData, tx.date, sw, l2Config)
+            if (result && result.stockWeight !== sw) {
+              const pe = stockData.getMetric(tx.date)
+              const ytm = bondData.getMetric(tx.date)
+              if (pe && ytm) {
+                l2Info = { spread: (1 / pe - ytm / 100) * 100, adjStockWeight: result.stockWeight, staticStockWeight: sw }
+              }
+            }
+          }
+        }
+      }
+
+      points.push({ date: tx.date, cost: runningCost, value: mv, breakdown, l2Info })
     }
 
     // Deduplicate by date — keep last point per date (portfolio mode creates
@@ -147,6 +182,15 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
                 }
                 html += `</div>`
               }
+            }
+
+            // Show L2 info when active
+            if (pt.l2Info) {
+              const li = pt.l2Info
+              html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;font-size:11px;">L2 动态权重</span>`
+              html += `<div style="font-size:11px;color:#94A3B8;">  股债收益差: ${li.spread.toFixed(1)}%</div>`
+              html += `<div style="font-size:11px;color:#94A3B8;">  股票占比: ${(li.adjStockWeight * 100).toFixed(0)}% (静态 ${(li.staticStockWeight * 100).toFixed(0)}%)</div>`
+              html += `</div>`
             }
           }
           return html

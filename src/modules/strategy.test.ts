@@ -373,6 +373,81 @@ describe('runSimulation portfolio mode', () => {
   })
 })
 
+describe('runSimulation L2 dynamic weight', () => {
+  function pad(n: number) { return String(n).padStart(2, '0') }
+
+  function makeSeriesWithMetric(name: string, startYear: number, count: number, metrics: number[]): IndexData {
+    const rows: { date: string; price: number; metric?: number }[] = []
+    for (let i = 0; i < count; i++) {
+      const d = new Date(startYear, 0, 1 + i)
+      const ds = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      rows.push({ date: ds, price: 100 + i, metric: metrics[i] })
+    }
+    return new IndexDataImpl(name, rows)
+  }
+
+  // 20 days: stock PE 15→10 (spreads 4.17→7.0), bond YTM all 3%
+  const stockPEs = Array.from({ length: 20 }, (_, i) => 15 - i * 0.25)  // 15, 14.75, ..., 10.25
+  const bondYTMs = Array(20).fill(3)
+  const stock = makeSeriesWithMetric('沪深300全收益', 2020, 20, stockPEs)
+  const bond = makeSeriesWithMetric('国债3-5年', 2020, 20, bondYTMs)
+  const pm = new Map<string, IndexData>()
+  pm.set('沪深300全收益', stock)
+  pm.set('国债3-5年', bond)
+
+  const l2Cfg: import('./l2-allocator').L2Config = {
+    stockMinPct: 0.4, stockMaxPct: 0.8,
+    lookbackYears: 5, deadZoneLow: 40, deadZoneHigh: 60,
+  }
+
+  const l2Segment: Segment = {
+    indexName: '',
+    frequency: 'monthly',
+    day: 20,
+    amount: 2000,
+    startDate: '2020-01-20',
+    endDate: '2020-01-20',
+    allocations: [
+      { indexName: '沪深300全收益', weight: 0.6 },
+      { indexName: '国债3-5年', weight: 0.4 },
+    ],
+  }
+
+  it('L2 adjusts stock/bond allocation amounts', () => {
+    const s: Strategy = {
+      segments: [l2Segment],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-01-31' },
+      l2Config: l2Cfg,
+    }
+    const { transactions } = runSimulation(s, pm)
+    expect(transactions).toHaveLength(2)
+    const stockTx = transactions.find((t) => t.indexName === '沪深300全收益')!
+    const bondTx = transactions.find((t) => t.indexName === '国债3-5年')!
+    // Day 20: PE≈10.25, spread≈(1/10.25-0.03)×100≈6.76 (near max)
+    // 20 data points in range → spread at top → stockWeight ≈ 0.8
+    // 2000 × 0.8 = 1600 → stock amount > static 1200
+    expect(stockTx.grossAmount).toBeGreaterThan(1200)
+  })
+
+  it('L2 falls back to static when PE or YTM is null', () => {
+    const noPE = makeSeriesWithMetric('沪深300全收益', 2020, 20, Array(20).fill(null as unknown as number))
+    const noPEpm = new Map(pm)
+    noPEpm.set('沪深300全收益', noPE)
+    // Use l2Fallback segment on day 20 for consistency
+    const seg: Segment = { ...l2Segment, startDate: '2020-01-20', endDate: '2020-01-20' }
+    const s: Strategy = {
+      segments: [seg],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-01-31' },
+      l2Config: l2Cfg,
+    }
+    const { transactions } = runSimulation(s, noPEpm)
+    const stockTx = transactions.find((t) => t.indexName === '沪深300全收益')!
+    expect(stockTx.grossAmount).toBe(1200) // static 60% × 2000
+  })
+})
+
 describe('validateStrategy portfolio mode', () => {
   const available = ['沪深300全收益', '国债1-3年']
 

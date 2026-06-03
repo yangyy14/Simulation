@@ -1,6 +1,8 @@
 import { type IndexData } from './data-loader'
 import { xirr } from './xirr'
 import { computeMultiplier, type SmartConfig } from './valuator'
+import { computeStockWeight, type L2Config } from './l2-allocator'
+import { getAssetCategory } from '../App'
 
 export type Frequency = 'monthly' | 'weekly'
 export type AmountMode = 'fixed' | 'smart'
@@ -35,6 +37,7 @@ export interface Strategy {
     startDate: string
     endDate: string
   }
+  l2Config?: L2Config
 }
 
 export interface Transaction {
@@ -179,17 +182,69 @@ export function runSimulation(
 
     if (isPortfolio) {
       for (const date of dates) {
-        for (const alloc of segment.allocations!) {
+        // ── L2: dynamic stock/bond weight adjustment ──
+        const allocs = segment.allocations!
+        const aStockAllocs = allocs.filter((a) => {
+          const cat = getAssetCategory(a.indexName)
+          return cat.category === 'stock' && cat.subCategory === 'a-stock'
+        })
+        const bondAllocs = allocs.filter((a) => getAssetCategory(a.indexName).category === 'bond')
+        const otherAllocs = allocs.filter((a) => {
+          const cat = getAssetCategory(a.indexName)
+          return !(cat.category === 'stock' && cat.subCategory === 'a-stock') && cat.category !== 'bond'
+        })
+
+        const staticStockW = aStockAllocs.reduce((s, a) => s + a.weight, 0)
+        const staticBondW = bondAllocs.reduce((s, a) => s + a.weight, 0)
+
+        let adjStockW = staticStockW
+        let adjBondW = staticBondW
+
+        if (strategy.l2Config && staticStockW > 0 && staticBondW > 0 && aStockAllocs.length > 0) {
+          // Choose benchmark indices: largest A-stock by weight, first bond (prefer 3-5y)
+          const stockIdx = aStockAllocs.reduce((best, a) => a.weight > best.weight ? a : best).indexName
+          const bondIdx = bondAllocs.find((a) => a.indexName.includes('3-5'))?.indexName || bondAllocs[0]!.indexName
+
+          const stockData = priceMap.get(stockIdx)
+          const bondData = priceMap.get(bondIdx)
+          if (stockData && bondData) {
+            const l2Result = computeStockWeight(stockData, bondData, date, staticStockW, strategy.l2Config)
+            if (l2Result) {
+              adjStockW = l2Result.stockWeight
+              adjBondW = 1 - adjStockW - otherAllocs.reduce((s, a) => s + a.weight, 0)
+              if (adjBondW < 0) { adjBondW = 0; adjStockW = 1 - otherAllocs.reduce((s, a) => s + a.weight, 0) }
+            }
+          }
+        }
+
+        // ── Generate transactions with L2-adjusted weights ──
+        const totalAmount = segment.amount
+        for (const alloc of allocs) {
           const series = priceMap.get(alloc.indexName)
           if (!series) continue
           const price = series.getPrice(date)
           if (price === null) continue
 
+          // Determine which pool this allocation belongs to
+          const cat = getAssetCategory(alloc.indexName)
+          const isABond = cat.category === 'bond'
+          const isAStock = cat.category === 'stock' && cat.subCategory === 'a-stock'
+
+          // Effective weight: for A-stock/bond, use adjusted ratio; others use static
+          let effectiveWeight: number
+          if (isAStock && staticStockW > 0) {
+            effectiveWeight = adjStockW * (alloc.weight / staticStockW)
+          } else if (isABond && staticBondW > 0) {
+            effectiveWeight = adjBondW * (alloc.weight / staticBondW)
+          } else {
+            effectiveWeight = alloc.weight
+          }
+
           let multiplier = 1.0
           if (alloc.amountMode === 'smart' && alloc.smartConfig) {
             multiplier = computeMultiplier(series, date, alloc.smartConfig)
           }
-          const grossAmount = segment.amount * alloc.weight * multiplier
+          const grossAmount = totalAmount * effectiveWeight * multiplier
           const netAmount = grossAmount * (1 - strategy.fees.purchaseFee)
           const shares = netAmount / price
           transactions.push({

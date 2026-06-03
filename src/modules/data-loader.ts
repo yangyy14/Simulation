@@ -3,6 +3,7 @@ export interface IndexData {
   getPrice(date: string): number | null
   getMetric(date: string): number | null
   getMetricsInRange(startDate: string, endDate: string): number[]
+  getMetricsInRangeRaw(startDate: string, endDate: string): number[]
   getLatestDate(): string | null
 }
 
@@ -57,6 +58,18 @@ export class IndexDataImpl implements IndexData {
         seen.add(v)
         values.push(v)
       }
+    }
+    return values
+  }
+
+  getMetricsInRangeRaw(startDate: string, endDate: string): number[] {
+    const metricSource = this.usePriceAsMetric ? this.prices : this.metrics
+    const values: number[] = []
+    for (const d of this.sortedDates) {
+      if (d < startDate) continue
+      if (d > endDate) break
+      const v = metricSource.get(d)
+      if (v !== undefined) values.push(v)
     }
     return values
   }
