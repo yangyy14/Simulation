@@ -109,16 +109,28 @@ export default function SegmentEditor({ segment, index: i, availableIndices, onC
             </button>
           </div>
           {isPortfolio && (
-            <button
-              type="button"
-              onClick={() => onChange({ ...segment, rebalance: !segment.rebalance })}
-              className={cn(
-                'px-2 py-0.5 text-[10px] rounded transition-colors',
-                segment.rebalance ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-text-muted border border-border',
-              )}
-            >
-              {segment.rebalance ? '再平衡' : '再平衡'}
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => onChange({ ...segment, dynamicBuy: segment.dynamicBuy === false ? true : false })}
+                className={cn(
+                  'px-2 py-0.5 text-[10px] rounded transition-colors',
+                  segment.dynamicBuy !== false ? 'bg-blue/20 text-blue-400 border border-blue-500/30' : 'text-text-muted border border-border',
+                )}
+              >
+                动态买入
+              </button>
+              <button
+                type="button"
+                onClick={() => onChange({ ...segment, rebalance: !segment.rebalance })}
+                className={cn(
+                  'px-2 py-0.5 text-[10px] rounded transition-colors',
+                  segment.rebalance ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'text-text-muted border border-border',
+                )}
+              >
+                再平衡
+              </button>
+            </>
           )}
         </div>
         <button

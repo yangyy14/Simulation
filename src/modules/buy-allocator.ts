@@ -4,33 +4,51 @@ export interface CategoryAlloc {
   targetWeight: number
 }
 
+/**
+ * Allocate invest amount so the post-purchase portfolio is as close
+ * to target weights as possible.
+ *
+ * Logic:
+ * 1. postTotal = current total MV + investAmount
+ * 2. For each category: targetPost = postTotal × targetWeight
+ * 3. needed = max(0, targetPost − currentMV)
+ * 4. If needed sum > investAmount: scale down proportionally
+ * 5. If needed sum === 0: distribute by target weight
+ * 6. Else: use needed amounts, distribute remainder by target weight
+ */
 export function allocateBuy(
   categories: CategoryAlloc[],
   totalAmount: number,
 ): Map<string, number> {
   const totalMV = categories.reduce((s, c) => s + c.marketValue, 0)
+  const postTotal = totalMV + totalAmount
+
+  // Compute how much each category needs to reach its post-purchase target
+  const needed = categories.map(c => ({
+    name: c.name,
+    amount: Math.max(0, c.targetWeight * postTotal - c.marketValue),
+    weight: c.targetWeight,
+  }))
+
+  const totalNeeded = needed.reduce((s, n) => s + n.amount, 0)
   const result = new Map<string, number>()
 
-  // Compute gaps (ignore near-zero gaps from floating point)
-  const EPS = 1e-6
-  const gaps = categories.map(c => {
-    const raw = c.targetWeight * totalMV - c.marketValue
-    return { name: c.name, gap: Math.abs(raw) < EPS ? 0 : raw }
-  })
-
-  // Only allocate to underweight (positive gap)
-  const positiveGaps = gaps.filter(g => g.gap > 0)
-  const totalGap = positiveGaps.reduce((s, g) => s + g.gap, 0)
-
-  for (const c of categories) {
-    const g = gaps.find(g => g.name === c.name)!
-    if (g.gap > 0 && totalGap > 0) {
-      result.set(c.name, totalAmount * (g.gap / totalGap))
-    } else if (totalGap === 0) {
-      // No underweight categories → fall back to target weight
-      result.set(c.name, totalAmount * c.targetWeight)
-    } else {
-      result.set(c.name, 0)
+  if (totalNeeded <= 0) {
+    // All categories already at or above target → fall back to target weight
+    for (const n of needed) {
+      result.set(n.name, totalAmount * n.weight)
+    }
+  } else if (totalNeeded <= totalAmount) {
+    // We have enough money to fill all needs
+    // Fill needs exactly, distribute remainder by target weight
+    const remainder = totalAmount - totalNeeded
+    for (const n of needed) {
+      result.set(n.name, n.amount + remainder * n.weight)
+    }
+  } else {
+    // Not enough money to fill all needs → scale down proportionally
+    for (const n of needed) {
+      result.set(n.name, totalAmount * (n.amount / totalNeeded))
     }
   }
 

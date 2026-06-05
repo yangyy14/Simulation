@@ -23,6 +23,7 @@ export interface Segment {
   amountMode?: AmountMode
   smartConfig?: SmartConfig
   allocations?: Allocation[]
+  dynamicBuy?: boolean  // default true
   rebalance?: boolean
   startDate: string
   endDate: string
@@ -280,7 +281,11 @@ export function runSimulation(
           cats.push({ name: catKey, marketValue: mv, targetWeight: catWeight })
         }
 
-        const catAlloc = allocateBuy(cats, totalAmount)
+        // Dynamic buy: gap-based + static blend, or pure static if disabled
+        const useDynamic = segment.dynamicBuy !== false // default true
+        const catAlloc = useDynamic
+          ? allocateBuy(cats, totalAmount)
+          : new Map([...catWeights.keys()].map(k => [k, totalAmount * (catWeights.get(k) || 0)] as const))
 
         for (const [catKey, catAmount] of catAlloc) {
           if (catAmount <= 0) continue
@@ -429,7 +434,15 @@ function computeRiskMetrics(
       if (price !== null) mv += shares * price
     }
     if (mv > 0) {
-      mvSeries.push({ date: tx.date, mv, cost: runningCost })
+      // Deduplicate by date: keep only the final state per date.
+      // This prevents rebalance sell transactions from creating
+      // artificial MV dips (cash from sells is not tracked in MV).
+      const last = mvSeries[mvSeries.length - 1]
+      if (last && last.date === tx.date) {
+        mvSeries[mvSeries.length - 1] = { date: tx.date, mv, cost: runningCost }
+      } else {
+        mvSeries.push({ date: tx.date, mv, cost: runningCost })
+      }
     }
   }
 

@@ -24,20 +24,33 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
       source: string
     }
 
+    interface RebalanceInfo {
+      before: { stock: number; bond: number; gold: number }
+      after: { stock: number; bond: number; gold: number }
+      sellTotal: number
+      buyTotal: number
+      tradeCost: number
+    }
+
     interface Point {
       date: string; cost: number; value: number
       breakdown?: { stock: number; bond: number; gold: number; sub: { aStock: number; usStock: number } }
       buyTx?: TxInfo[]
       hasRebalance: boolean
+      rebalanceInfo?: RebalanceInfo
     }
 
     const txByDate = new Map<string, TxInfo[]>()
     const rebalanceDates = new Set<string>()
+    let hasAnyRebalance = false
     for (const tx of sorted) {
       const list = txByDate.get(tx.date) || []
       list.push({ indexName: tx.indexName, grossAmount: tx.grossAmount, type: tx.type, source: tx.source })
       txByDate.set(tx.date, list)
-      if (tx.source === 'rebalance') rebalanceDates.add(tx.date)
+      if (tx.source === 'rebalance') {
+        rebalanceDates.add(tx.date)
+        hasAnyRebalance = true
+      }
     }
 
     const points: Point[] = []
@@ -87,7 +100,47 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
     }
     for (const pt of uniquePoints) {
       pt.buyTx = txByDate.get(pt.date)
-      pt.hasRebalance = rebalanceDates.has(pt.date)
+      pt.hasRebalance = hasAnyRebalance && rebalanceDates.has(pt.date)
+
+      if (pt.hasRebalance && pt.buyTx && pt.breakdown && pt.value > 0) {
+        const rbTxs = pt.buyTx.filter(t => t.source === 'rebalance')
+        const sells = rbTxs.filter(t => t.type === 'sell')
+        const buys = rbTxs.filter(t => t.type === 'buy')
+        const sellTotal = sells.reduce((s, t) => s + t.grossAmount, 0)
+        const buyTotal = buys.reduce((s, t) => s + t.grossAmount, 0)
+
+        // Reverse rebalance effects to get pre-rebalance breakdown
+        const before = { stock: pt.breakdown.stock, bond: pt.breakdown.bond, gold: pt.breakdown.gold }
+        for (const t of sells) {
+          const cat = getAssetCategory(t.indexName)
+          if (cat.category === 'stock') before.stock += t.grossAmount
+          else if (cat.category === 'bond') before.bond += t.grossAmount
+          else if (cat.category === 'gold') before.gold += t.grossAmount
+        }
+        for (const t of buys) {
+          const cat = getAssetCategory(t.indexName)
+          if (cat.category === 'stock') before.stock -= t.grossAmount
+          else if (cat.category === 'bond') before.bond -= t.grossAmount
+          else if (cat.category === 'gold') before.gold -= t.grossAmount
+        }
+
+        const preTotal = before.stock + before.bond + before.gold
+        pt.rebalanceInfo = {
+          before: {
+            stock: preTotal > 0 ? (before.stock / preTotal) * 100 : 0,
+            bond: preTotal > 0 ? (before.bond / preTotal) * 100 : 0,
+            gold: preTotal > 0 ? (before.gold / preTotal) * 100 : 0,
+          },
+          after: {
+            stock: pt.value > 0 ? (pt.breakdown.stock / pt.value) * 100 : 0,
+            bond: pt.value > 0 ? (pt.breakdown.bond / pt.value) * 100 : 0,
+            gold: pt.value > 0 ? (pt.breakdown.gold / pt.value) * 100 : 0,
+          },
+          sellTotal,
+          buyTotal,
+          tradeCost: sellTotal - buyTotal,
+        }
+      }
     }
 
     if (uniquePoints.length > 0) {
@@ -191,6 +244,15 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
                 html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #F59E0B;"><span style="color:#F59E0B;font-size:11px;">本次调仓</span>`
                 const sells = rebalanceTxs.filter(t => t.type === 'sell')
                 const buys = rebalanceTxs.filter(t => t.type === 'buy')
+
+                if (pt.rebalanceInfo) {
+                  const ri = pt.rebalanceInfo
+                  const fmtPct = (v: number) => v.toFixed(1) + '%'
+                  html += `<div style="font-size:11px;color:#94A3B8;">  调仓前: 股 ${fmtPct(ri.before.stock)} / 债 ${fmtPct(ri.before.bond)} / 金 ${fmtPct(ri.before.gold)}</div>`
+                  html += `<div style="font-size:11px;color:#94A3B8;">  调仓后: 股 ${fmtPct(ri.after.stock)} / 债 ${fmtPct(ri.after.bond)} / 金 ${fmtPct(ri.after.gold)}</div>`
+                  html += `<div style="font-size:11px;color:#64748B;">  成本: ¥ ${ri.tradeCost.toLocaleString()}</div>`
+                }
+
                 if (sells.length > 0) {
                   html += `<div style="font-size:11px;color:#94A3B8;">  卖出:</div>`
                   for (const t of sells) {
@@ -211,7 +273,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
         },
       },
       legend: {
-        data: ['期末总市值', '累计投入成本', ...(uniquePoints.some(p => p.hasRebalance) ? ['调仓'] : [])],
+        data: ['期末总市值', '累计投入成本', ...(hasAnyRebalance ? ['调仓'] : [])],
         top: 0,
         textStyle: { color: '#94A3B8', fontSize: 12 },
       },
@@ -256,7 +318,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
           itemStyle: { color: '#3B82F6' },
           symbol: 'none',
         },
-        ...(uniquePoints.some(p => p.hasRebalance) ? [{
+        ...(hasAnyRebalance ? [{
           name: '调仓',
           type: 'scatter',
           data: uniquePoints.filter(p => p.hasRebalance).map(p => [p.date, p.value] as [string, number]),
