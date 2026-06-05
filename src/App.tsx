@@ -246,14 +246,6 @@ export default function App() {
       toast.error(err)
       return
     }
-    // Check if L2 is enabled but bond YTM data is missing
-    if (strategy.l2Config) {
-      const bondIdx = '国债3-5年'
-      const bondData = priceMap.get(bondIdx)
-      if (!bondData || bondData.getMetric('2020-01-01') === null) {
-        toast.warning('L2 已启用但缺少债券 YTM 数据，已回退静态权重。请运行 python3 scripts/fetch_data.py --full 下载。', { duration: 6000 })
-      }
-    }
     setCommittedStrategy(strategy)
   }, [strategy, priceMap])
 
@@ -381,7 +373,7 @@ export default function App() {
                 transactionCount={summary.transactions.length}
                 evalEndDate={committedStrategy.evalWindow.endDate}
               />
-              <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} evalEndDate={committedStrategy.evalWindow.endDate} l2Config={committedStrategy.l2Config} />
+              <ValueChart summary={summary} transactions={summary.transactions} priceMap={priceMap} evalEndDate={committedStrategy.evalWindow.endDate} />
               <ResultTabs
                 summary={summary}
                 transactions={summary.transactions}

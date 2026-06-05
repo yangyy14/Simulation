@@ -1,8 +1,7 @@
 import { useMemo } from 'react'
 import ReactECharts from 'echarts-for-react'
-import type { Transaction, PortfolioSummary, Strategy } from '@/modules/strategy'
+import type { Transaction, PortfolioSummary } from '@/modules/strategy'
 import type { IndexData } from '@/modules/data-loader'
-import { computeStockWeight } from '@/modules/l2-allocator'
 import { getAssetCategory } from '@/App'
 
 interface Props {
@@ -10,36 +9,35 @@ interface Props {
   transactions: Transaction[]
   priceMap: Map<string, IndexData>
   evalEndDate: string
-  l2Config?: Strategy['l2Config']
 }
 
-export default function ValueChart({ summary, transactions, priceMap, evalEndDate, l2Config }: Props) {
+export default function ValueChart({ summary, transactions, priceMap, evalEndDate }: Props) {
   const option = useMemo(() => {
     if (transactions.length === 0) return {}
 
     const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date))
 
-    interface L2Info {
-      spread: number
-      adjStockWeight: number
-      staticStockWeight: number
+    interface TxInfo {
+      indexName: string
+      grossAmount: number
+      type: string
+      source: string
     }
-
-    interface TxInfo { indexName: string; grossAmount: number }
 
     interface Point {
       date: string; cost: number; value: number
       breakdown?: { stock: number; bond: number; gold: number; sub: { aStock: number; usStock: number } }
-      l2Info?: L2Info
       buyTx?: TxInfo[]
+      hasRebalance: boolean
     }
 
-    // Pre-group transactions by date for buy breakdown display
     const txByDate = new Map<string, TxInfo[]>()
+    const rebalanceDates = new Set<string>()
     for (const tx of sorted) {
       const list = txByDate.get(tx.date) || []
-      list.push({ indexName: tx.indexName, grossAmount: tx.grossAmount })
+      list.push({ indexName: tx.indexName, grossAmount: tx.grossAmount, type: tx.type, source: tx.source })
       txByDate.set(tx.date, list)
+      if (tx.source === 'rebalance') rebalanceDates.add(tx.date)
     }
 
     const points: Point[] = []
@@ -47,8 +45,12 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
     const shareAcc: Record<string, number> = {}
 
     for (const tx of sorted) {
-      runningCost += tx.grossAmount
-      shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) + tx.shares
+      if (tx.source === 'invest') runningCost += tx.grossAmount
+      if (tx.type === 'buy') {
+        shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) + tx.shares
+      } else {
+        shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) - tx.shares
+      }
       let mv = 0
       const breakdown = { stock: 0, bond: 0, gold: 0, sub: { aStock: 0, usStock: 0 } }
       for (const [idxName, shares] of Object.entries(shareAcc)) {
@@ -70,40 +72,10 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
           }
         }
       }
-      // L2 info at this point
-      let l2Info: L2Info | undefined
-      if (l2Config) {
-        const aStockNames = Object.keys(shareAcc).filter((n) => {
-          const c = getAssetCategory(n); return c.category === 'stock' && c.subCategory === 'a-stock'
-        })
-        const bondNames = Object.keys(shareAcc).filter((n) => getAssetCategory(n).category === 'bond')
-        if (aStockNames.length > 0 && bondNames.length > 0) {
-          const stockIdx = aStockNames[0]
-          const bondIdx = bondNames.find((n) => n.includes('3-5')) || bondNames[0]
-          const stockData = priceMap.get(stockIdx!)
-          const bondData = priceMap.get(bondIdx!)
-          if (stockData && bondData) {
-            const pe = stockData.getMetric(tx.date)
-            const ytm = bondData.getMetric(tx.date)
-            if (pe && ytm && mv > 0) {
-              const stockMV = aStockNames.reduce((s, n) => s + (shareAcc[n] || 0) * (stockData.getPrice(tx.date) || 0), 0)
-              const sw = stockMV / mv
-              const result = computeStockWeight(stockData, bondData, tx.date, sw, l2Config)
-              l2Info = {
-                spread: (1 / pe - ytm / 100) * 100,
-                adjStockWeight: result ? result.stockWeight : sw,
-                staticStockWeight: sw,
-              }
-            }
-          }
-        }
-      }
-
-      points.push({ date: tx.date, cost: runningCost, value: mv, breakdown, l2Info })
+      points.push({ date: tx.date, cost: runningCost, value: mv, breakdown, hasRebalance: false })
     }
 
-    // Deduplicate by date — keep last point per date (portfolio mode creates
-    // multiple transactions on the same date, one per allocation)
+    // Deduplicate by date
     const uniquePoints: Point[] = []
     for (const pt of points) {
       const last = uniquePoints[uniquePoints.length - 1]
@@ -113,9 +85,9 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
         uniquePoints.push(pt)
       }
     }
-    // Attach per-date buy transactions to deduplicated points
     for (const pt of uniquePoints) {
       pt.buyTx = txByDate.get(pt.date)
+      pt.hasRebalance = rebalanceDates.has(pt.date)
     }
 
     if (uniquePoints.length > 0) {
@@ -130,6 +102,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
         date: evalEndDate,
         cost: runningCost,
         value: terminalMV > 0 ? terminalMV : uniquePoints[uniquePoints.length - 1].value,
+        hasRebalance: false,
       })
     }
 
@@ -159,7 +132,6 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
             if (p.value == null) continue
             html += `<div><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px;"></span>${p.seriesName}: <span style="font-family:Fira Code;font-weight:600;">¥ ${p.value.toLocaleString()}</span></div>`
           }
-          // Show cumulative return at this point
           const idx = arr[0]?.dataIndex
           if (idx !== undefined && idx < uniquePoints.length) {
             const pt = uniquePoints[idx]
@@ -169,7 +141,6 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
               html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;">累计收益率</span> <span style="font-family:Fira Code;font-weight:600;color:${ret >= 0 ? '#EF4444' : '#22C55E'};">${sign}${(ret * 100).toFixed(2)}%</span></div>`
             }
 
-            // Show asset allocation when multiple categories present
             if (pt.breakdown && pt.value > 0) {
               const bd = pt.breakdown
               const categories: { label: string; pct: number }[] = []
@@ -193,7 +164,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
                 categories.push({ label: `黄金 ${(bd.gold / pt.value * 100).toFixed(0)}%`, pct: bd.gold / pt.value * 100 })
               }
 
-              if (categories.length >= 2) {
+              if (categories.length > 0) {
                 html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;font-size:11px;">资产配置</span>`
                 for (const cat of categories) {
                   html += `<div style="font-size:11px;color:#94A3B8;">  ${cat.label}</div>`
@@ -202,31 +173,45 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
               }
             }
 
-            // Show buy breakdown at this date
             if (pt.buyTx && pt.buyTx.length > 0) {
-              const totalBuy = pt.buyTx.reduce((s, t) => s + t.grossAmount, 0)
-              html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;font-size:11px;">本次买入</span>`
-              for (const t of pt.buyTx) {
-                const pct = totalBuy > 0 ? (t.grossAmount / totalBuy * 100).toFixed(0) : '0'
-                html += `<div style="font-size:11px;color:#94A3B8;">  ${t.indexName}: ¥ ${t.grossAmount.toLocaleString()} (${pct}%)</div>`
-              }
-              html += `</div>`
-            }
+              const investTxs = pt.buyTx.filter(t => t.source === 'invest')
+              const rebalanceTxs = pt.buyTx.filter(t => t.source === 'rebalance')
 
-            // Show L2 info when active
-            if (pt.l2Info) {
-              const li = pt.l2Info
-              html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;font-size:11px;">L2 动态权重</span>`
-              html += `<div style="font-size:11px;color:#94A3B8;">  股债收益差: ${li.spread.toFixed(1)}%</div>`
-              html += `<div style="font-size:11px;color:#94A3B8;">  股票占比: ${(li.adjStockWeight * 100).toFixed(0)}% (静态 ${(li.staticStockWeight * 100).toFixed(0)}%)</div>`
-              html += `</div>`
+              if (investTxs.length > 0) {
+                const totalBuy = investTxs.reduce((s, t) => s + t.grossAmount, 0)
+                html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;"><span style="color:#64748B;font-size:11px;">本次买入</span>`
+                for (const t of investTxs) {
+                  const pct = totalBuy > 0 ? (t.grossAmount / totalBuy * 100).toFixed(0) : '0'
+                  html += `<div style="font-size:11px;color:#94A3B8;">  ${t.indexName}: ¥ ${t.grossAmount.toLocaleString()} (${pct}%)</div>`
+                }
+                html += `</div>`
+              }
+
+              if (rebalanceTxs.length > 0) {
+                html += `<div style="margin-top:4px;padding-top:4px;border-top:1px solid #F59E0B;"><span style="color:#F59E0B;font-size:11px;">本次调仓</span>`
+                const sells = rebalanceTxs.filter(t => t.type === 'sell')
+                const buys = rebalanceTxs.filter(t => t.type === 'buy')
+                if (sells.length > 0) {
+                  html += `<div style="font-size:11px;color:#94A3B8;">  卖出:</div>`
+                  for (const t of sells) {
+                    html += `<div style="font-size:11px;color:#94A3B8;">    ${t.indexName}: ¥ ${t.grossAmount.toLocaleString()}</div>`
+                  }
+                }
+                if (buys.length > 0) {
+                  html += `<div style="font-size:11px;color:#94A3B8;">  买入:</div>`
+                  for (const t of buys) {
+                    html += `<div style="font-size:11px;color:#94A3B8;">    ${t.indexName}: ¥ ${t.grossAmount.toLocaleString()}</div>`
+                  }
+                }
+                html += `</div>`
+              }
             }
           }
           return html
         },
       },
       legend: {
-        data: ['期末总市值', '累计投入成本'],
+        data: ['期末总市值', '累计投入成本', ...(uniquePoints.some(p => p.hasRebalance) ? ['调仓'] : [])],
         top: 0,
         textStyle: { color: '#94A3B8', fontSize: 12 },
       },
@@ -271,6 +256,14 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
           itemStyle: { color: '#3B82F6' },
           symbol: 'none',
         },
+        ...(uniquePoints.some(p => p.hasRebalance) ? [{
+          name: '调仓',
+          type: 'scatter',
+          data: uniquePoints.filter(p => p.hasRebalance).map(p => [p.date, p.value] as [string, number]),
+          symbolSize: 8,
+          itemStyle: { color: '#F59E0B' },
+          symbol: 'diamond',
+        }] : []),
         ...(crossoverIdx >= 0 ? [{
           name: '回本节点',
           type: 'scatter',
@@ -282,7 +275,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
         }] : []),
       ] as object[],
     }
-  }, [summary, transactions, priceMap, evalEndDate, l2Config])
+  }, [summary, transactions, priceMap, evalEndDate])
 
   return (
     <div className="bg-card border border-border rounded-lg p-5">

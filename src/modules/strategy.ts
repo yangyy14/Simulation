@@ -1,7 +1,8 @@
 import { type IndexData } from './data-loader'
 import { xirr } from './xirr'
 import { computeMultiplier, type SmartConfig } from './valuator'
-import { computeStockWeight, type L2Config } from './l2-allocator'
+import { allocateBuy, type CategoryAlloc } from './buy-allocator'
+import { evaluateRebalance } from './rebalancer-v2'
 import { getAssetCategory } from '../App'
 
 export type Frequency = 'monthly' | 'weekly'
@@ -17,27 +18,34 @@ export interface Allocation {
 export interface Segment {
   indexName: string
   frequency: Frequency
-  day: number // 1-28 for monthly, 0-6 for weekly (0=Sun)
-  amount: number // gross investment per period (before fees). fixed=actual, smart=base
-  amountMode?: AmountMode // default 'fixed'
-  smartConfig?: SmartConfig // only used when amountMode='smart'
-  allocations?: Allocation[] // non-empty = portfolio mode
+  day: number
+  amount: number
+  amountMode?: AmountMode
+  smartConfig?: SmartConfig
+  allocations?: Allocation[]
+  rebalance?: boolean
   startDate: string
   endDate: string
+}
+
+export interface RebalanceConfig {
+  deviationThreshold: number
+  minIntervalMonths: number
+  tradeCostRate: number
 }
 
 export interface Strategy {
   segments: Segment[]
   fees: {
-    purchaseFee: number // e.g. 0.0015 = 0.15%
+    purchaseFee: number
     redemptionFee: number
-    managementFee: number // annual, e.g. 0.015 = 1.5%
+    managementFee: number
   }
   evalWindow: {
     startDate: string
     endDate: string
   }
-  l2Config?: L2Config
+  rebalanceConfig?: RebalanceConfig
 }
 
 export interface Transaction {
@@ -45,7 +53,9 @@ export interface Transaction {
   indexName: string
   price: number
   shares: number
-  grossAmount: number // amount invested (before purchase fee)
+  grossAmount: number
+  type: 'buy' | 'sell'
+  source: 'invest' | 'rebalance'
 }
 
 export interface PortfolioSummary {
@@ -54,10 +64,10 @@ export interface PortfolioSummary {
   cumulativeReturn: number
   xirr: number | null
   transactions: Transaction[]
-  maxDrawdown: number | null       // 最大回撤 (0-1)
-  annualVolatility: number | null  // 年化波动率 (0-1)
-  calmarRatio: number | null       // 收益/回撤比
-  longestDrawdownDays: number      // 最长回撤天数
+  maxDrawdown: number | null
+  annualVolatility: number | null
+  calmarRatio: number | null
+  longestDrawdownDays: number
 }
 
 export function validateStrategy(
@@ -71,7 +81,6 @@ export function validateStrategy(
     const isPortfolio = s.allocations && s.allocations.length > 0
 
     if (isPortfolio) {
-      // Portfolio mode validations
       if (s.allocations!.length < 2) {
         return `片段 #${i + 1}: 组合模式至少需要 2 个指数`
       }
@@ -103,7 +112,6 @@ export function validateStrategy(
         }
       }
     } else {
-      // Single index mode validations (existing)
       if (!availableIndices.includes(s.indexName)) {
         return `片段 #${i + 1}: 指数 "${s.indexName}" 不可用`
       }
@@ -120,7 +128,6 @@ export function validateStrategy(
       }
     }
 
-    // Shared validations
     if (s.amount <= 0) {
       return `片段 #${i + 1}: 定投金额必须大于 0`
     }
@@ -181,79 +188,123 @@ export function runSimulation(
     const isPortfolio = segment.allocations && segment.allocations.length > 0
 
     if (isPortfolio) {
+      // Segment-level share accumulator for dynamic buy allocation
+      const segShares: Record<string, number> = {}
+      const allocs = segment.allocations!
+      const totalAmount = segment.amount
+
+      // Pre-classify allocations into categories
+      const catWeights = new Map<string, number>() // category → total static weight
+      const catIndices = new Map<string, Allocation[]>() // category → allocations
+      for (const alloc of allocs) {
+        const cat = getAssetCategory(alloc.indexName)
+        const catKey = cat.category // 'stock' | 'bond' | 'gold'
+        catWeights.set(catKey, (catWeights.get(catKey) || 0) + alloc.weight)
+        if (!catIndices.has(catKey)) catIndices.set(catKey, [])
+        catIndices.get(catKey)!.push(alloc)
+      }
+
+      let lastRebalanceDate: string | null = null
+
       for (const date of dates) {
-        // ── L2: dynamic stock/bond weight adjustment ──
-        const allocs = segment.allocations!
-        const aStockAllocs = allocs.filter((a) => {
-          const cat = getAssetCategory(a.indexName)
-          return cat.category === 'stock' && cat.subCategory === 'a-stock'
-        })
-        const bondAllocs = allocs.filter((a) => getAssetCategory(a.indexName).category === 'bond')
-        const otherAllocs = allocs.filter((a) => {
-          const cat = getAssetCategory(a.indexName)
-          return !(cat.category === 'stock' && cat.subCategory === 'a-stock') && cat.category !== 'bond'
-        })
+        // ── 1. Rebalance first: correct past drift before new money goes in ──
+        if (segment.rebalance && strategy.rebalanceConfig) {
+          const preCats: CategoryAlloc[] = []
+          for (const [catKey, catWeight] of catWeights) {
+            let mv = 0
+            for (const alloc of catIndices.get(catKey) || []) {
+              const shares = segShares[alloc.indexName] || 0
+              const series = priceMap.get(alloc.indexName)
+              if (series) {
+                const price = series.getPrice(date)
+                if (price !== null) mv += shares * price
+              }
+            }
+            preCats.push({ name: catKey, marketValue: mv, targetWeight: catWeight })
+          }
 
-        const staticStockW = aStockAllocs.reduce((s, a) => s + a.weight, 0)
-        const staticBondW = bondAllocs.reduce((s, a) => s + a.weight, 0)
-
-        let adjStockW = staticStockW
-        let adjBondW = staticBondW
-
-        if (strategy.l2Config && staticStockW > 0 && staticBondW > 0 && aStockAllocs.length > 0) {
-          // Choose benchmark indices: largest A-stock by weight, first bond (prefer 3-5y)
-          const stockIdx = aStockAllocs.reduce((best, a) => a.weight > best.weight ? a : best).indexName
-          const bondIdx = bondAllocs.find((a) => a.indexName.includes('3-5'))?.indexName || bondAllocs[0]!.indexName
-
-          const stockData = priceMap.get(stockIdx)
-          const bondData = priceMap.get(bondIdx)
-          if (stockData && bondData) {
-            const l2Result = computeStockWeight(stockData, bondData, date, staticStockW, strategy.l2Config)
-            if (l2Result) {
-              adjStockW = l2Result.stockWeight
-              adjBondW = 1 - adjStockW - otherAllocs.reduce((s, a) => s + a.weight, 0)
-              if (adjBondW < 0) { adjBondW = 0; adjStockW = 1 - otherAllocs.reduce((s, a) => s + a.weight, 0) }
+          const rbResult = evaluateRebalance(preCats, date, strategy.rebalanceConfig, lastRebalanceDate)
+          if (rbResult) {
+            lastRebalanceDate = date
+            for (const sell of rbResult.sells) {
+              const indices = catIndices.get(sell.name) || []
+              const catMV = preCats.find(c => c.name === sell.name)?.marketValue || 1
+              for (const alloc of indices) {
+                const series = priceMap.get(alloc.indexName)
+                if (!series) continue
+                const price = series.getPrice(date)
+                if (price === null) continue
+                const idxMV = (segShares[alloc.indexName] || 0) * price
+                const proportion = catMV > 0 ? idxMV / catMV : 1 / indices.length
+                const sellAmount = sell.amount * proportion
+                const shares = sellAmount / price
+                segShares[alloc.indexName] = (segShares[alloc.indexName] || 0) - shares
+                transactions.push({
+                  date, indexName: alloc.indexName, price, shares,
+                  grossAmount: sellAmount, type: 'sell', source: 'rebalance',
+                })
+              }
+            }
+            for (const buy of rbResult.buys) {
+              const indices = catIndices.get(buy.name) || []
+              const catTotalWeight = catWeights.get(buy.name) || 1
+              for (const alloc of indices) {
+                const series = priceMap.get(alloc.indexName)
+                if (!series) continue
+                const price = series.getPrice(date)
+                if (price === null) continue
+                const buyAmount = buy.amount * (alloc.weight / catTotalWeight)
+                const shares = buyAmount / price
+                segShares[alloc.indexName] = (segShares[alloc.indexName] || 0) + shares
+                transactions.push({
+                  date, indexName: alloc.indexName, price, shares,
+                  grossAmount: buyAmount, type: 'buy', source: 'rebalance',
+                })
+              }
             }
           }
         }
 
-        // ── Generate transactions with L2-adjusted weights ──
-        const totalAmount = segment.amount
-        for (const alloc of allocs) {
-          const series = priceMap.get(alloc.indexName)
-          if (!series) continue
-          const price = series.getPrice(date)
-          if (price === null) continue
-
-          // Determine which pool this allocation belongs to
-          const cat = getAssetCategory(alloc.indexName)
-          const isABond = cat.category === 'bond'
-          const isAStock = cat.category === 'stock' && cat.subCategory === 'a-stock'
-
-          // Effective weight: for A-stock/bond, use adjusted ratio; others use static
-          let effectiveWeight: number
-          if (isAStock && staticStockW > 0) {
-            effectiveWeight = adjStockW * (alloc.weight / staticStockW)
-          } else if (isABond && staticBondW > 0) {
-            effectiveWeight = adjBondW * (alloc.weight / staticBondW)
-          } else {
-            effectiveWeight = alloc.weight
+        // ── 2. Then buy: dynamic allocation into a (now-balanced) portfolio ──
+        const cats: CategoryAlloc[] = []
+        for (const [catKey, catWeight] of catWeights) {
+          let mv = 0
+          for (const alloc of catIndices.get(catKey) || []) {
+            const shares = segShares[alloc.indexName] || 0
+            const series = priceMap.get(alloc.indexName)
+            if (series) {
+              const price = series.getPrice(date)
+              if (price !== null) mv += shares * price
+            }
           }
+          cats.push({ name: catKey, marketValue: mv, targetWeight: catWeight })
+        }
 
-          let multiplier = 1.0
-          if (alloc.amountMode === 'smart' && alloc.smartConfig) {
-            multiplier = computeMultiplier(series, date, alloc.smartConfig)
+        const catAlloc = allocateBuy(cats, totalAmount)
+
+        for (const [catKey, catAmount] of catAlloc) {
+          if (catAmount <= 0) continue
+          const indices = catIndices.get(catKey) || []
+          const catTotalWeight = catWeights.get(catKey) || 1
+          for (const alloc of indices) {
+            const series = priceMap.get(alloc.indexName)
+            if (!series) continue
+            const price = series.getPrice(date)
+            if (price === null) continue
+
+            let multiplier = 1.0
+            if (alloc.amountMode === 'smart' && alloc.smartConfig) {
+              multiplier = computeMultiplier(series, date, alloc.smartConfig)
+            }
+            const grossAmount = catAmount * (alloc.weight / catTotalWeight) * multiplier
+            const netAmount = grossAmount * (1 - strategy.fees.purchaseFee)
+            const shares = netAmount / price
+            segShares[alloc.indexName] = (segShares[alloc.indexName] || 0) + shares
+            transactions.push({
+              date, indexName: alloc.indexName, price, shares,
+              grossAmount, type: 'buy', source: 'invest',
+            })
           }
-          const grossAmount = totalAmount * effectiveWeight * multiplier
-          const netAmount = grossAmount * (1 - strategy.fees.purchaseFee)
-          const shares = netAmount / price
-          transactions.push({
-            date,
-            indexName: alloc.indexName,
-            price,
-            shares,
-            grossAmount,
-          })
         }
       }
     } else {
@@ -277,6 +328,8 @@ export function runSimulation(
           price,
           shares,
           grossAmount,
+          type: 'buy',
+          source: 'invest',
         })
       }
     }
@@ -287,7 +340,11 @@ export function runSimulation(
   let marketValue = 0
 
   for (const tx of transactions) {
-    totalCost += tx.grossAmount
+    if (tx.source === 'invest') {
+      totalCost += tx.grossAmount
+    }
+
+    if (tx.type === 'sell') continue // sells don't contribute to terminal MV
 
     const currentSeries = priceMap.get(tx.indexName)
     const currentPrice = currentSeries?.getPrice(evalEnd)
@@ -304,7 +361,9 @@ export function runSimulation(
 
   const cashflows: { date: string; amount: number }[] = []
   for (const tx of transactions) {
-    cashflows.push({ date: tx.date, amount: -tx.grossAmount })
+    if (tx.source === 'invest') {
+      cashflows.push({ date: tx.date, amount: -tx.grossAmount })
+    }
   }
   if (marketValue > 0) {
     cashflows.push({ date: evalEnd, amount: marketValue })
@@ -350,15 +409,18 @@ function computeRiskMetrics(
     return { maxDrawdown: null, annualVolatility: null, calmarRatio: null, longestDrawdownDays: 0 }
   }
 
-  // Build daily MV sequence at each transaction date
   const sorted = [...transactions].sort((a, b) => a.date.localeCompare(b.date))
   const shareAcc: Record<string, number> = {}
   const mvSeries: { date: string; mv: number; cost: number }[] = []
   let runningCost = 0
 
   for (const tx of sorted) {
-    runningCost += tx.grossAmount
-    shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) + tx.shares
+    if (tx.source === 'invest') runningCost += tx.grossAmount
+    if (tx.type === 'buy') {
+      shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) + tx.shares
+    } else {
+      shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) - tx.shares
+    }
     let mv = 0
     for (const [idxName, shares] of Object.entries(shareAcc)) {
       const series = priceMap.get(idxName)
@@ -375,7 +437,6 @@ function computeRiskMetrics(
     return { maxDrawdown: null, annualVolatility: null, calmarRatio: null, longestDrawdownDays: 0 }
   }
 
-  // Max drawdown
   let peak = mvSeries[0].mv
   let maxDD = 0
   for (const pt of mvSeries) {
@@ -384,14 +445,12 @@ function computeRiskMetrics(
     if (dd > maxDD) maxDD = dd
   }
 
-  // Annualized volatility from portfolio MV, stripping out new contributions.
   let annualVol: number | null = null
   if (mvSeries.length >= 2) {
     const returns: number[] = []
     for (let i = 1; i < mvSeries.length; i++) {
       const contribution = mvSeries[i].cost - mvSeries[i - 1].cost
       const prevMV = mvSeries[i - 1].mv
-      // Organic return: MV growth excluding newly invested money
       if (prevMV > 0) {
         returns.push((mvSeries[i].mv - contribution) / prevMV - 1)
       }
@@ -406,13 +465,11 @@ function computeRiskMetrics(
     }
   }
 
-  // Calmar ratio = cumulativeReturn / maxDrawdown (total return, not annualized)
   const lastMV = mvSeries[mvSeries.length - 1].mv
   const lastCost = mvSeries[mvSeries.length - 1].cost
   const totalRet = lastCost > 0 ? (lastMV - lastCost) / lastCost : 0
   const calmar = maxDD > 0 ? totalRet / maxDD : null
 
-  // Longest drawdown days (market value < cost)
   let longest = 0
   let current = 0
   for (const pt of mvSeries) {

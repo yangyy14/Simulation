@@ -152,7 +152,7 @@ export default function ResultTabs({ summary, transactions, evalEndDate, priceMa
 
 // Inline transaction table (extracted from TransactionTable.tsx)
 function TransactionTableInner({ transactions, evalEndDate, priceMap, summary }: Props) {
-  const [sortField, setSortField] = useState<'date' | 'indexName' | 'price' | 'shares' | 'grossAmount' | 'currentValue' | 'pnl'>('date')
+  const [sortField, setSortField] = useState<'date' | 'indexName' | 'type' | 'source' | 'price' | 'shares' | 'grossAmount' | 'currentValue' | 'pnl'>('date')
   const [sortAsc, setSortAsc] = useState(false)
 
   const enriched = useMemo(() => {
@@ -160,7 +160,7 @@ function TransactionTableInner({ transactions, evalEndDate, priceMap, summary }:
       const series = priceMap.get(tx.indexName)
       const currentPrice = series?.getPrice(evalEndDate)
       const currentValue = currentPrice !== null && currentPrice !== undefined ? tx.shares * currentPrice : 0
-      const pnl = tx.grossAmount > 0 ? (currentValue - tx.grossAmount) / tx.grossAmount : 0
+      const pnl = tx.type === 'buy' && tx.grossAmount > 0 ? (currentValue - tx.grossAmount) / tx.grossAmount : 0
       return { ...tx, currentValue, pnl }
     })
   }, [transactions, evalEndDate, priceMap])
@@ -172,6 +172,8 @@ function TransactionTableInner({ transactions, evalEndDate, priceMap, summary }:
       switch (sortField) {
         case 'date': cmp = a.date.localeCompare(b.date); break
         case 'indexName': cmp = a.indexName.localeCompare(b.indexName); break
+        case 'type': cmp = a.type.localeCompare(b.type); break
+        case 'source': cmp = a.source.localeCompare(b.source); break
         case 'price': cmp = a.price - b.price; break
         case 'shares': cmp = a.shares - b.shares; break
         case 'grossAmount': cmp = a.grossAmount - b.grossAmount; break
@@ -193,10 +195,10 @@ function TransactionTableInner({ transactions, evalEndDate, priceMap, summary }:
       <table className="w-full border-collapse text-xs">
         <thead>
           <tr>
-            {(['date','indexName','price','shares','grossAmount','currentValue','pnl'] as const).map((f) => (
+            {(['date','indexName','type','source','price','shares','grossAmount','currentValue','pnl'] as const).map((f) => (
               <th key={f} className="px-3 py-2 text-left text-xs font-semibold text-text-secondary bg-root border-b border-border cursor-pointer select-none hover:text-text-primary sticky top-0 whitespace-nowrap"
                 onClick={() => toggleSort(f)}>
-                {{date:'日期',indexName:'指数',price:'买入净值',shares:'买入份额',grossAmount:'投入金额',currentValue:'当前市值',pnl:'盈亏'}[f]}
+                {{date:'日期',indexName:'指数',type:'方向',source:'来源',price:'净值',shares:'份额',grossAmount:'金额',currentValue:'当前市值',pnl:'盈亏'}[f]}
                 {' '}{sortField === f ? (sortAsc ? '▲' : '▼') : ''}
               </th>
             ))}
@@ -204,15 +206,21 @@ function TransactionTableInner({ transactions, evalEndDate, priceMap, summary }:
         </thead>
         <tbody>
           {sorted.map((tx, i) => (
-            <tr key={i} className="hover:bg-white/[0.02]">
+            <tr key={i} className={`hover:bg-white/[0.02] ${tx.source === 'rebalance' ? 'bg-amber-500/8' : ''}`}>
               <td className="px-3 py-2 font-mono tabular-nums whitespace-nowrap">{tx.date}</td>
               <td className="px-3 py-2 whitespace-nowrap">{tx.indexName}</td>
+              <td className={`px-3 py-2 whitespace-nowrap text-xs ${tx.type === 'sell' ? 'text-green' : 'text-red'}`}>
+                {tx.type === 'sell' ? '卖出' : '买入'}
+              </td>
+              <td className="px-3 py-2 whitespace-nowrap text-xs text-text-muted">
+                {tx.source === 'rebalance' ? '调仓' : '定投'}
+              </td>
               <td className="px-3 py-2 font-mono tabular-nums">{tx.price.toFixed(2)}</td>
-              <td className="px-3 py-2 font-mono tabular-nums">{tx.shares.toFixed(2)}</td>
+              <td className="px-3 py-2 font-mono tabular-nums">{tx.type === 'sell' ? '-' : ''}{tx.shares.toFixed(2)}</td>
               <td className="px-3 py-2 font-mono tabular-nums">¥ {tx.grossAmount.toLocaleString()}</td>
               <td className="px-3 py-2 font-mono tabular-nums">¥ {tx.currentValue.toLocaleString()}</td>
-              <td className={`px-3 py-2 font-mono tabular-nums ${tx.pnl >= 0 ? 'text-red' : 'text-green'}`}>
-                {tx.pnl >= 0 ? '+' : ''}{(tx.pnl * 100).toFixed(2)}%
+              <td className={`px-3 py-2 font-mono tabular-nums ${tx.type === 'sell' ? 'text-text-muted' : tx.pnl >= 0 ? 'text-red' : 'text-green'}`}>
+                {tx.type === 'sell' ? '—' : `${tx.pnl >= 0 ? '+' : ''}${(tx.pnl * 100).toFixed(2)}%`}
               </td>
             </tr>
           ))}
