@@ -183,7 +183,8 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
           let html = `<div style="font-size:11px;color:#94A3B8;margin-bottom:4px;">${date}</div>`
           for (const p of arr) {
             if (p.value == null) continue
-            html += `<div><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px;"></span>${p.seriesName}: <span style="font-family:Fira Code;font-weight:600;">¥ ${p.value.toLocaleString()}</span></div>`
+            const amount = Array.isArray(p.value) ? p.value[1] : p.value
+            html += `<div><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${p.color};margin-right:6px;"></span>${p.seriesName}: <span style="font-family:Fira Code;font-weight:600;">¥ ${Number(amount).toLocaleString()}</span></div>`
           }
           const idx = arr[0]?.dataIndex
           if (idx !== undefined && idx < uniquePoints.length) {

@@ -291,7 +291,28 @@ export function runSimulation(
           if (catAmount <= 0) continue
           const indices = catIndices.get(catKey) || []
           const catTotalWeight = catWeights.get(catKey) || 1
+
+          // Build per-index allocation data for intra-category dynamic buy
+          const idxCats: CategoryAlloc[] = []
           for (const alloc of indices) {
+            const shares = segShares[alloc.indexName] || 0
+            const series = priceMap.get(alloc.indexName)
+            let mv = 0
+            if (series) {
+              const price = series.getPrice(date)
+              if (price !== null) mv = shares * price
+            }
+            // Normalize weight within the category
+            idxCats.push({ name: alloc.indexName, marketValue: mv, targetWeight: alloc.weight / catTotalWeight })
+          }
+
+          const idxAlloc = useDynamic
+            ? allocateBuy(idxCats, catAmount)
+            : new Map(indices.map(a => [a.indexName, catAmount * (a.weight / catTotalWeight)] as const))
+
+          for (const alloc of indices) {
+            const idxAmount = idxAlloc.get(alloc.indexName) || 0
+            if (idxAmount <= 0) continue
             const series = priceMap.get(alloc.indexName)
             if (!series) continue
             const price = series.getPrice(date)
@@ -301,7 +322,7 @@ export function runSimulation(
             if (alloc.amountMode === 'smart' && alloc.smartConfig) {
               multiplier = computeMultiplier(series, date, alloc.smartConfig)
             }
-            const grossAmount = catAmount * (alloc.weight / catTotalWeight) * multiplier
+            const grossAmount = idxAmount * multiplier
             const netAmount = grossAmount * (1 - strategy.fees.purchaseFee)
             const shares = netAmount / price
             segShares[alloc.indexName] = (segShares[alloc.indexName] || 0) + shares
@@ -342,22 +363,46 @@ export function runSimulation(
 
   const evalEnd = strategy.evalWindow.endDate
   let totalCost = 0
-  let marketValue = 0
 
+  // FIFO lot tracker: each buy (invest or rebalance) adds a lot; sells consume
+  // the oldest lots first. This preserves purchase dates so management fees are
+  // correctly applied to the actual shares still held at evalEnd.
+  interface Lot { date: string; shares: number }
+  const lots: Record<string, Lot[]> = {}
   for (const tx of transactions) {
     if (tx.source === 'invest') {
       totalCost += tx.grossAmount
     }
+    if (tx.type === 'buy') {
+      if (!lots[tx.indexName]) lots[tx.indexName] = []
+      lots[tx.indexName].push({ date: tx.date, shares: tx.shares })
+    } else {
+      let remaining = tx.shares
+      const idxLots = lots[tx.indexName] || []
+      while (remaining > 0 && idxLots.length > 0) {
+        if (idxLots[0].shares <= remaining) {
+          remaining -= idxLots[0].shares
+          idxLots.shift()
+        } else {
+          idxLots[0].shares -= remaining
+          remaining = 0
+        }
+      }
+    }
+  }
 
-    if (tx.type === 'sell') continue // sells don't contribute to terminal MV
-
-    const currentSeries = priceMap.get(tx.indexName)
-    const currentPrice = currentSeries?.getPrice(evalEnd)
-    if (currentPrice === null || currentPrice === undefined) continue
-
-    const holdingYears = yearsBetween(tx.date, evalEnd)
-    const mgmtFactor = Math.pow(1 - strategy.fees.managementFee, holdingYears)
-    marketValue += tx.shares * currentPrice * mgmtFactor
+  let marketValue = 0
+  const evalEndTime = new Date(evalEnd + 'T00:00:00').getTime()
+  for (const [idxName, idxLots] of Object.entries(lots)) {
+    const series = priceMap.get(idxName)
+    const price = series?.getPrice(evalEnd)
+    if (price === null || price === undefined) continue
+    for (const lot of idxLots) {
+      const lotTime = new Date(lot.date + 'T00:00:00').getTime()
+      const holdingYears = (evalEndTime - lotTime) / (24 * 60 * 60 * 1000) / 365.25
+      const mgmtFactor = Math.pow(1 - strategy.fees.managementFee, holdingYears)
+      marketValue += lot.shares * price * mgmtFactor
+    }
   }
 
   marketValue *= 1 - strategy.fees.redemptionFee
@@ -393,16 +438,6 @@ export function runSimulation(
     transactions,
     ...risk,
   }
-}
-
-function daysBetween(startDate: string, endDate: string): number {
-  const start = new Date(startDate + 'T00:00:00').getTime()
-  const end = new Date(endDate + 'T00:00:00').getTime()
-  return (end - start) / (24 * 60 * 60 * 1000)
-}
-
-function yearsBetween(startDate: string, endDate: string): number {
-  return daysBetween(startDate, endDate) / 365.25
 }
 
 function computeRiskMetrics(
@@ -484,13 +519,17 @@ function computeRiskMetrics(
   const calmar = maxDD > 0 ? totalRet / maxDD : null
 
   let longest = 0
-  let current = 0
+  let streakStart: string | null = null
   for (const pt of mvSeries) {
     if (pt.mv < pt.cost) {
-      current++
-      if (current > longest) longest = current
+      if (!streakStart) streakStart = pt.date
+      const days = Math.max(15, Math.round(
+        (new Date(pt.date + 'T00:00:00').getTime() -
+         new Date(streakStart + 'T00:00:00').getTime()) / (24 * 60 * 60 * 1000)
+      ))
+      if (days > longest) longest = days
     } else {
-      current = 0
+      streakStart = null
     }
   }
 

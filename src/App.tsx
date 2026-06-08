@@ -7,6 +7,7 @@ import KpiCards from './components/KpiCards'
 import ValueChart from './components/ValueChart'
 import ResultTabs from './components/ResultTabs'
 import DataExplorer from './components/DataExplorer'
+import ComparePage from './components/ComparePage'
 import { loadIndexData, type IndexData } from './modules/data-loader'
 import { runSimulation, validateStrategy, type Strategy, type PortfolioSummary } from './modules/strategy'
 import { encodeStrategy, decodeStrategy, hasStrategyInURL } from './modules/url-serializer'
@@ -102,7 +103,7 @@ export default function App() {
   const [priceMap, setPriceMap] = useState<Map<string, IndexData>>(new Map())
   const [loading, setLoading] = useState(true)
   const [loadErrors, setLoadErrors] = useState<string[]>([])
-  const [page, setPage] = useState<'sim' | 'data'>('sim')
+  const [page, setPage] = useState<'sim' | 'data' | 'compare'>('sim')
   const [dragOver, setDragOver] = useState(false)
   const [mobileSidebar, setMobileSidebar] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -300,6 +301,13 @@ export default function App() {
             >
               数据审查
             </button>
+            <button
+              type="button"
+              onClick={() => setPage('compare')}
+              className={`px-3 py-1 text-xs rounded transition-colors ${page === 'compare' ? 'bg-blue text-white' : 'text-text-secondary hover:text-text-primary'}`}
+            >
+              组合对比
+            </button>
           </div>
         </div>
         {page === 'sim' && (
@@ -321,6 +329,10 @@ export default function App() {
       {page === 'data' ? (
         <main className="h-[calc(100vh-3.5rem-2rem)] overflow-y-auto">
           <DataExplorer />
+        </main>
+      ) : page === 'compare' ? (
+        <main className="flex h-[calc(100vh-3.5rem-2rem)]">
+          <ComparePage priceMap={priceMap} availableIndices={INDEX_NAMES} />
         </main>
       ) : (
         <>
