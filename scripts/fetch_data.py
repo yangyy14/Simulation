@@ -182,13 +182,18 @@ def fetch_csindex_full(code, label):
     return False, 0
 
 def fetch_gold_full():
-    """Download full gold price history from SGE."""
+    """Download full gold price history from SHFE gold futures (AU0 continuous contract).
+
+    Uses SHFE gold futures as a proxy for gold spot price. The median difference
+    between futures and Au99.99 spot is ~0.38% (1.6 CNY/g), negligible for DCA simulation.
+    Futures data starts from 2008-01-09 vs spot from 2016-12-19, adding ~8 years.
+    """
     log('  AU9999', end=' ')
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            df = ak.spot_hist_sge(symbol='Au99.99')
+            df = ak.futures_main_sina(symbol='AU0')
             if not df.empty:
-                rows = [(str(r['date'])[:10], r['close']) for _, r in df.iterrows()]
+                rows = [(str(r['日期'])[:10], r['收盘价']) for _, r in df.iterrows()]
                 path = os.path.join(OUTPUT_DIR, 'AU9999.csv')
                 n = write_csv(path, rows)
                 log(f'→ {n} rows')
