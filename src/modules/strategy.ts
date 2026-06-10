@@ -227,41 +227,58 @@ export function runSimulation(
           const rbResult = evaluateRebalance(preCats, date, strategy.rebalanceConfig, lastRebalanceDate)
           if (rbResult) {
             lastRebalanceDate = date
-            for (const sell of rbResult.sells) {
-              const indices = catIndices.get(sell.name) || []
-              const catMV = preCats.find(c => c.name === sell.name)?.marketValue || 1
-              for (const alloc of indices) {
-                const series = priceMap.get(alloc.indexName)
-                if (!series) continue
-                const price = series.getPrice(date)
-                if (price === null) continue
-                const idxMV = (segShares[alloc.indexName] || 0) * price
-                const proportion = catMV > 0 ? idxMV / catMV : 1 / indices.length
-                const sellAmount = sell.amount * proportion
-                const shares = sellAmount / price
-                segShares[alloc.indexName] = (segShares[alloc.indexName] || 0) - shares
-                transactions.push({
-                  date, indexName: alloc.indexName, price, shares,
-                  grossAmount: sellAmount, type: 'sell', source: 'rebalance',
-                })
+
+            // Index-level execution: compute each index's deviation from its own
+            // static target weight and correct individually. Overweight → sell,
+            // underweight → buy from the sell pool (after trade cost).
+            const idxStates: { alloc: Allocation; mv: number; price: number }[] = []
+            let totalMV = 0
+            for (const alloc of allocs) {
+              const series = priceMap.get(alloc.indexName)
+              if (!series) continue
+              const price = series.getPrice(date)
+              if (price === null) continue
+              const mv = (segShares[alloc.indexName] || 0) * price
+              totalMV += mv
+              idxStates.push({ alloc, mv, price })
+            }
+
+            const toSell: { alloc: Allocation; amount: number; price: number }[] = []
+            const toBuy: { alloc: Allocation; amount: number; price: number }[] = []
+
+            for (const st of idxStates) {
+              const targetMV = st.alloc.weight * totalMV
+              const diff = st.mv - targetMV
+              if (diff > 0) {
+                toSell.push({ alloc: st.alloc, amount: diff, price: st.price })
+              } else if (diff < 0) {
+                toBuy.push({ alloc: st.alloc, amount: -diff, price: st.price })
               }
             }
-            for (const buy of rbResult.buys) {
-              const indices = catIndices.get(buy.name) || []
-              const catTotalWeight = catWeights.get(buy.name) || 1
-              for (const alloc of indices) {
-                const series = priceMap.get(alloc.indexName)
-                if (!series) continue
-                const price = series.getPrice(date)
-                if (price === null) continue
-                const buyAmount = buy.amount * (alloc.weight / catTotalWeight)
-                const shares = buyAmount / price
-                segShares[alloc.indexName] = (segShares[alloc.indexName] || 0) + shares
-                transactions.push({
-                  date, indexName: alloc.indexName, price, shares,
-                  grossAmount: buyAmount, type: 'buy', source: 'rebalance',
-                })
-              }
+
+            const totalSell = toSell.reduce((s, x) => s + x.amount, 0)
+            const buyPool = totalSell * (1 - strategy.rebalanceConfig.tradeCostRate)
+            const totalNeed = toBuy.reduce((s, x) => s + x.amount, 0)
+
+            for (const sell of toSell) {
+              const shares = sell.amount / sell.price
+              segShares[sell.alloc.indexName] = (segShares[sell.alloc.indexName] || 0) - shares
+              transactions.push({
+                date, indexName: sell.alloc.indexName, price: sell.price, shares,
+                grossAmount: sell.amount, type: 'sell', source: 'rebalance',
+              })
+            }
+
+            for (const buy of toBuy) {
+              if (totalNeed <= 0) continue
+              const scale = Math.min(buyPool / totalNeed, 1)
+              const buyAmount = buy.amount * scale
+              const shares = buyAmount / buy.price
+              segShares[buy.alloc.indexName] = (segShares[buy.alloc.indexName] || 0) + shares
+              transactions.push({
+                date, indexName: buy.alloc.indexName, price: buy.price, shares,
+                grossAmount: buyAmount, type: 'buy', source: 'rebalance',
+              })
             }
           }
         }

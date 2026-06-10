@@ -372,6 +372,107 @@ describe('runSimulation portfolio mode', () => {
   })
 })
 
+describe('rebalance index-level execution', () => {
+  function pad(n: number) { return String(n).padStart(2, '0') }
+
+  function makeSeries(name: string, startYear: number, count: number, basePrice = 100, step = 0.1): IndexData {
+    const rows: { date: string; price: number }[] = []
+    for (let i = 0; i < count; i++) {
+      const d = new Date(startYear, 0, 1)
+      d.setDate(d.getDate() + i)
+      const ds = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+      rows.push({ date: ds, price: basePrice + i * step })
+    }
+    return new IndexDataImpl(name, rows)
+  }
+
+  // 沪深300 grows fast, 中证500 grows slow, 国债 flat
+  const hs300 = makeSeries('沪深300全收益', 2020, 180, 100, 3)   // +540 over 180 days
+  const zz500 = makeSeries('中证500全收益', 2020, 180, 100, 0.2)  // +36 over 180 days
+  const bond = makeSeries('国债1-3年', 2020, 180, 100, 0.01)       // ~flat
+  const pm = new Map<string, IndexData>()
+  pm.set('沪深300全收益', hs300)
+  pm.set('中证500全收益', zz500)
+  pm.set('国债1-3年', bond)
+
+  it('corrects each index to its own target weight on rebalance', () => {
+    const strat: Strategy = {
+      segments: [{
+        indexName: '', frequency: 'monthly', day: 1, amount: 3000,
+        startDate: '2020-01-01', endDate: '2020-03-01',
+        allocations: [
+          { indexName: '沪深300全收益', weight: 0.3 },
+          { indexName: '中证500全收益', weight: 0.3 },
+          { indexName: '国债1-3年', weight: 0.4 },
+        ],
+        rebalance: true,
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-06-30' },
+      rebalanceConfig: { deviationThreshold: 0.01, minIntervalMonths: 0, tradeCostRate: 0 },
+    }
+    const { transactions } = runSimulation(strat, pm)
+
+    // Find rebalance transactions
+    const rbSells = transactions.filter(t => t.source === 'rebalance' && t.type === 'sell')
+    const rbBuys = transactions.filter(t => t.source === 'rebalance' && t.type === 'buy')
+
+    // After 3 months of divergent growth, rebalance should fire
+    expect(rbSells.length).toBeGreaterThan(0)
+
+    // 沪深300 grew fast → should be sold (over target)
+    const hsSells = rbSells.filter(t => t.indexName === '沪深300全收益')
+    expect(hsSells.length).toBeGreaterThan(0)
+
+    // 中证500 grew slowly → below its individual target → must be BOUGHT
+    // Old code: both sold proportionally within overweight category
+    // New code: each index corrects to its own target → 中证500 gets bought
+    const zzBuys = rbBuys.filter(t => t.indexName === '中证500全收益')
+    const zzSells = rbSells.filter(t => t.indexName === '中证500全收益')
+    expect(zzBuys.length).toBeGreaterThan(0)
+    expect(zzSells.length).toBe(0)
+  })
+
+  it('single-index segments are unaffected', () => {
+    const strat: Strategy = {
+      segments: [{
+        indexName: '沪深300全收益', frequency: 'monthly', day: 1, amount: 1000,
+        startDate: '2020-01-01', endDate: '2020-03-01',
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-06-30' },
+      rebalanceConfig: { deviationThreshold: 0.01, minIntervalMonths: 0, tradeCostRate: 0 },
+    }
+    const { transactions } = runSimulation(strat, pm)
+    expect(transactions.every(t => t.source === 'invest')).toBe(true)
+    expect(transactions.length).toBe(3)
+  })
+
+  it('deducts trade cost from buy pool', () => {
+    const strat: Strategy = {
+      segments: [{
+        indexName: '', frequency: 'monthly', day: 1, amount: 3000,
+        startDate: '2020-01-01', endDate: '2020-03-01',
+        allocations: [
+          { indexName: '沪深300全收益', weight: 0.3 },
+          { indexName: '中证500全收益', weight: 0.3 },
+          { indexName: '国债1-3年', weight: 0.4 },
+        ],
+        rebalance: true,
+      }],
+      fees: { purchaseFee: 0, redemptionFee: 0, managementFee: 0 },
+      evalWindow: { startDate: '2020-01-01', endDate: '2020-06-30' },
+      rebalanceConfig: { deviationThreshold: 0.01, minIntervalMonths: 0, tradeCostRate: 0.005 },
+    }
+    const { transactions } = runSimulation(strat, pm)
+    const rbTxs = transactions.filter(t => t.source === 'rebalance')
+    const totalSell = rbTxs.filter(t => t.type === 'sell').reduce((s, t) => s + t.grossAmount, 0)
+    const totalBuy = rbTxs.filter(t => t.type === 'buy').reduce((s, t) => s + t.grossAmount, 0)
+    // Buy pool = totalSell * (1 - 0.005) = totalSell * 0.995
+    expect(totalBuy).toBeCloseTo(totalSell * 0.995, 0)
+  })
+})
+
 describe('validateStrategy portfolio mode', () => {
   const available = ['沪深300全收益', '国债1-3年']
 
