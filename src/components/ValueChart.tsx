@@ -59,7 +59,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
 
     interface Point {
       date: string; cost: number; value: number
-      breakdown?: { stock: number; bond: number; gold: number; sub: { aStock: number; usStock: number } }
+      breakdown?: { stock: number; bond: number; gold: number; sub: { aStock: number; usStock: number; hkStock: number } }
       indexBreakdown?: { name: string; value: number; pct: number; targetWeight: number; category: string; subCategory: string | null }[]
       buyTx?: TxInfo[]
       hasRebalance: boolean
@@ -91,7 +91,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
         shareAcc[tx.indexName] = (shareAcc[tx.indexName] || 0) - tx.shares
       }
       let mv = 0
-      const breakdown = { stock: 0, bond: 0, gold: 0, sub: { aStock: 0, usStock: 0 } }
+      const breakdown = { stock: 0, bond: 0, gold: 0, sub: { aStock: 0, usStock: 0, hkStock: 0 } }
       const idxDetails: Point['indexBreakdown'] = []
       for (const [idxName, shares] of Object.entries(shareAcc)) {
         const series = priceMap.get(idxName)
@@ -104,6 +104,7 @@ export default function ValueChart({ summary, transactions, priceMap, evalEndDat
           if (cat.category === 'stock') {
             breakdown.stock += val
             if (cat.subCategory === 'us-stock') breakdown.sub.usStock += val
+            else if (cat.subCategory === 'hk-stock') breakdown.sub.hkStock += val
             else breakdown.sub.aStock += val
           } else if (cat.category === 'bond') {
             breakdown.bond += val

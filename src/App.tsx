@@ -15,7 +15,7 @@ import { useAutoSave, loadSavedStrategy } from './hooks/useAutoSave'
 
 export interface AssetCategory {
   category: 'stock' | 'bond' | 'gold'
-  subCategory: 'a-stock' | 'us-stock' | null
+  subCategory: 'a-stock' | 'us-stock' | 'hk-stock' | null
 }
 
 export interface AssetGroup {
@@ -29,8 +29,10 @@ const INDEX_META: Record<string, AssetCategory> = {
   '中证500全收益':  { category: 'stock', subCategory: 'a-stock' },
   '中证1000全收益': { category: 'stock', subCategory: 'a-stock' },
   '中证红利全收益': { category: 'stock', subCategory: 'a-stock' },
+  '科创50':        { category: 'stock', subCategory: 'a-stock' },
   '标普500':       { category: 'stock', subCategory: 'us-stock' },
   '纳斯达克100':    { category: 'stock', subCategory: 'us-stock' },
+  '恒生科技':       { category: 'stock', subCategory: 'hk-stock' },
   '国债1-3年':      { category: 'bond', subCategory: null },
   '国债3-5年':      { category: 'bond', subCategory: null },
   '国债5-7年':      { category: 'bond', subCategory: null },
@@ -57,6 +59,7 @@ const GROUP_ORDER: { label: string; filter: (meta: AssetCategory) => boolean }[]
   { label: 'A股', filter: (m) => m.category === 'stock' && m.subCategory === 'a-stock' },
   { label: '债券', filter: (m) => m.category === 'bond' },
   { label: '美股', filter: (m) => m.category === 'stock' && m.subCategory === 'us-stock' },
+  { label: '港股', filter: (m) => m.category === 'stock' && m.subCategory === 'hk-stock' },
   { label: '黄金', filter: (m) => m.category === 'gold' },
 ]
 

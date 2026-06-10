@@ -36,6 +36,14 @@ US_ETF_LIST = [
     ('纳斯达克100', '513100'),  # 国泰纳斯达克100ETF
 ]
 
+HK_INDEX_LIST = [
+    ('恒生科技', 'HSTECH'),
+]
+
+STAR_INDEX_LIST = [
+    ('科创50', 'sh000688'),
+]
+
 BATCH_SLEEP = 0.3   # seconds between API calls
 RETRY_SLEEP = 3.0    # seconds between retries
 MAX_RETRIES = 3
@@ -287,6 +295,50 @@ def fetch_us_etf_nav(name, symbol):
     log('→ FAILED')
     return False, 0
 
+def fetch_hk_index_sina(symbol, label):
+    """Download HK index daily data from Sina source."""
+    log(f'  {label} ({symbol})', end=' ')
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            df = ak.stock_hk_index_daily_sina(symbol=symbol)
+            if not df.empty:
+                rows = [(str(r['date'])[:10], r['close']) for _, r in df.iterrows()]
+                path = os.path.join(OUTPUT_DIR, f'{label}.csv')
+                n = write_csv(path, rows)
+                log(f'→ {n} rows')
+                return True, n
+        except Exception as e:
+            if attempt < MAX_RETRIES:
+                log(f'(retry {attempt}/{MAX_RETRIES}: {e})', end=' ')
+                time.sleep(RETRY_SLEEP)
+            else:
+                log(f'→ FAILED: {e}')
+                return False, 0
+    log('→ FAILED')
+    return False, 0
+
+def fetch_star_index_em(symbol, label):
+    """Download STAR/other A-share index from Eastmoney daily API (no PE)."""
+    log(f'  {label} ({symbol})', end=' ')
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            df = ak.stock_zh_index_daily(symbol=symbol)
+            if not df.empty:
+                rows = [(str(r['date'])[:10], r['close']) for _, r in df.iterrows()]
+                path = os.path.join(OUTPUT_DIR, f'{label}.csv')
+                n = write_csv(path, rows)
+                log(f'→ {n} rows')
+                return True, n
+        except Exception as e:
+            if attempt < MAX_RETRIES:
+                log(f'(retry {attempt}/{MAX_RETRIES}: {e})', end=' ')
+                time.sleep(RETRY_SLEEP)
+            else:
+                log(f'→ FAILED: {e}')
+                return False, 0
+    log('→ FAILED')
+    return False, 0
+
 # ── commands ─────────────────────────────────────────────
 
 def cmd_full():
@@ -329,6 +381,22 @@ def cmd_full():
         fail += 0 if s else 1
         time.sleep(0.5)
 
+    # HK indices
+    log('\n--- 港股指数 ---')
+    for name, symbol in HK_INDEX_LIST:
+        s = fetch_hk_index_sina(symbol, name)
+        ok += 1 if s else 0
+        fail += 0 if s else 1
+        time.sleep(0.5)
+
+    # STAR indices
+    log('\n--- 科创板指数 ---')
+    for name, symbol in STAR_INDEX_LIST:
+        s = fetch_star_index_em(symbol, name)
+        ok += 1 if s else 0
+        fail += 0 if s else 1
+        time.sleep(0.5)
+
     print_summary()
     return fail == 0
 
@@ -367,7 +435,25 @@ def cmd_verify():
     # US ETFs
     for name, _ in US_ETF_LIST:
         path = os.path.join(OUTPUT_DIR, f'{name}.csv')
-        ok, msg = validate_data(path, name, min_rows=50)  # ETFs start 2013-2014
+        ok, msg = validate_data(path, name, min_rows=50)
+        status = '✓' if ok else '✗'
+        log(f'  {status} {msg}')
+        if not ok:
+            all_ok = False
+
+    # HK indices
+    for name, _ in HK_INDEX_LIST:
+        path = os.path.join(OUTPUT_DIR, f'{name}.csv')
+        ok, msg = validate_data(path, name, min_rows=100)
+        status = '✓' if ok else '✗'
+        log(f'  {status} {msg}')
+        if not ok:
+            all_ok = False
+
+    # STAR indices
+    for name, _ in STAR_INDEX_LIST:
+        path = os.path.join(OUTPUT_DIR, f'{name}.csv')
+        ok, msg = validate_data(path, name, min_rows=100)
         status = '✓' if ok else '✗'
         log(f'  {status} {msg}')
         if not ok:
@@ -395,6 +481,16 @@ def cmd_default():
             missing.append(name)
 
     for name, _ in US_ETF_LIST:
+        path = os.path.join(OUTPUT_DIR, f'{name}.csv')
+        if not os.path.exists(path):
+            missing.append(name)
+
+    for name, _ in HK_INDEX_LIST:
+        path = os.path.join(OUTPUT_DIR, f'{name}.csv')
+        if not os.path.exists(path):
+            missing.append(name)
+
+    for name, _ in STAR_INDEX_LIST:
         path = os.path.join(OUTPUT_DIR, f'{name}.csv')
         if not os.path.exists(path):
             missing.append(name)
